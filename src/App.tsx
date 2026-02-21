@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect } from 'react';
-import { 
-  LayoutDashboard, 
-  History, 
-  Receipt, 
-  Settings, 
-  ChevronDown, 
-  AlertCircle, 
-  CheckCircle2, 
+import * as api from './lib/api';
+import {
+  LayoutDashboard,
+  History,
+  Receipt,
+  Settings,
+  ChevronDown,
+  AlertCircle,
+  CheckCircle2,
   Search,
   Filter,
   ArrowUpRight,
@@ -19,25 +20,25 @@ import {
   Check,
   Ban
 } from 'lucide-react';
-import { 
-  flexRender, 
-  getCoreRowModel, 
-  useReactTable, 
-  getSortedRowModel, 
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  getSortedRowModel,
   SortingState,
   getFilteredRowModel,
   ColumnDef
 } from '@tanstack/react-table';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  LineChart, 
-  Line 
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatNaira } from './lib/utils';
@@ -77,8 +78,8 @@ const SidebarItem = ({ icon: Icon, label, active, onClick }: { icon: any, label:
     onClick={onClick}
     className={cn(
       "flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all duration-200",
-      active 
-        ? "bg-black text-white shadow-lg shadow-black/10" 
+      active
+        ? "bg-black text-white shadow-lg shadow-black/10"
         : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
     )}
   >
@@ -186,12 +187,12 @@ const ReconciliationTable = ({ data }: { data: ShiftData[] }) => {
       <div className="p-4 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
         <h3 className="font-bold text-zinc-900">Attendant Reconciliation Matrix</h3>
         <div className="flex items-center gap-2">
-          <button 
+          <button
             onClick={() => setFilterShortages(!filterShortages)}
             className={cn(
               "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
-              filterShortages 
-                ? "bg-red-600 text-white" 
+              filterShortages
+                ? "bg-red-600 text-white"
                 : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
             )}
           >
@@ -247,16 +248,16 @@ const ExpenseAudit = () => {
   const queryClient = useQueryClient();
   const { data: expenses, isLoading } = useQuery<Expense[]>({
     queryKey: ['expenses', 'pending'],
-    queryFn: () => fetch('/api/expenses/pending').then(res => res.json())
+    queryFn: () => api.getPendingExpenses()
   });
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => fetch(`/api/expenses/${id}/approve`, { method: 'POST' }).then(res => res.json()),
+    mutationFn: (id: string) => api.approveExpense(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] })
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => fetch(`/api/expenses/${id}/reject`, { method: 'POST' }).then(res => res.json()),
+    mutationFn: (id: string) => api.rejectExpense(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] })
   });
 
@@ -271,9 +272,9 @@ const ExpenseAudit = () => {
   return (
     <div className="space-y-4">
       {expenses.map(expense => (
-        <motion.div 
+        <motion.div
           layout
-          key={expense.id} 
+          key={expense.id}
           className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm flex items-center justify-between"
         >
           <div className="flex items-center gap-4">
@@ -293,13 +294,13 @@ const ExpenseAudit = () => {
               </button>
             </div>
             <div className="flex items-center gap-2">
-              <button 
+              <button
                 onClick={() => approveMutation.mutate(expense.id)}
                 className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 transition-colors"
               >
                 <Check size={20} />
               </button>
-              <button 
+              <button
                 onClick={() => rejectMutation.mutate(expense.id)}
                 className="p-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
               >
@@ -320,18 +321,18 @@ const Dashboard = () => {
 
   const { data: branches } = useQuery({
     queryKey: ['branches'],
-    queryFn: () => fetch('/api/branches').then(res => res.json())
+    queryFn: () => api.getBranches()
   });
 
   const { data: shiftData, isLoading: shiftLoading } = useQuery<{ shift: any, data: ShiftData[] }>({
     queryKey: ['shift', activeBranch],
-    queryFn: () => fetch(`/api/shifts/active/${activeBranch}`).then(res => res.json()),
+    queryFn: () => api.getActiveShift(activeBranch),
     refetchInterval: 30000 // Poll every 30s
   });
 
   const { data: trendData } = useQuery({
     queryKey: ['stats', 'trend'],
-    queryFn: () => fetch('/api/stats/variance-trend').then(res => res.json())
+    queryFn: () => api.getTrendData()
   });
 
   const totals = useMemo(() => {
@@ -384,7 +385,7 @@ const Dashboard = () => {
             <h2 className="text-lg font-bold">Shift Reconciliation</h2>
             <div className="h-4 w-px bg-zinc-200 mx-2" />
             <div className="relative">
-              <select 
+              <select
                 value={activeBranch}
                 onChange={(e) => setActiveBranch(e.target.value)}
                 className="appearance-none bg-zinc-50 border border-zinc-200 rounded-lg px-4 py-2 pr-10 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-black/5 cursor-pointer"
@@ -400,9 +401,9 @@ const Dashboard = () => {
           <div className="flex items-center gap-3">
             <div className="relative">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-              <input 
-                type="text" 
-                placeholder="Search transactions..." 
+              <input
+                type="text"
+                placeholder="Search transactions..."
                 className="bg-zinc-50 border border-zinc-200 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black/5 w-64"
               />
             </div>
@@ -415,7 +416,7 @@ const Dashboard = () => {
         <div className="p-8 max-w-7xl mx-auto space-y-8">
           <AnimatePresence mode="wait">
             {activeTab === 'overview' && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
@@ -423,21 +424,21 @@ const Dashboard = () => {
               >
                 {/* KPI Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <StatCard 
-                    title="Total Shift Revenue" 
-                    value={formatNaira(totals.revenue)} 
+                  <StatCard
+                    title="Total Shift Revenue"
+                    value={formatNaira(totals.revenue)}
                     subValue="Expected from meters"
                     trend={12}
                   />
-                  <StatCard 
-                    title="POS Settlements" 
-                    value={formatNaira(totals.pos)} 
+                  <StatCard
+                    title="POS Settlements"
+                    value={formatNaira(totals.pos)}
                     subValue="Claimed by attendants"
                     trend={-2}
                   />
-                  <StatCard 
-                    title="Net True Variance" 
-                    value={formatNaira(totals.variance)} 
+                  <StatCard
+                    title="Net True Variance"
+                    value={formatNaira(totals.variance)}
                     subValue="Cash shortage/excess"
                     type={totals.variance < 0 ? 'danger' : totals.variance > 0 ? 'success' : 'neutral'}
                   />
@@ -466,7 +467,7 @@ const Dashboard = () => {
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F1F1" />
                           <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
                           <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                          <Tooltip 
+                          <Tooltip
                             contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                             formatter={(value: number) => [formatNaira(value), 'Variance']}
                           />
@@ -501,7 +502,7 @@ const Dashboard = () => {
             )}
 
             {activeTab === 'expenses' && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
@@ -522,7 +523,7 @@ const Dashboard = () => {
             )}
 
             {activeTab === 'history' && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
@@ -541,8 +542,8 @@ const Dashboard = () => {
                           onClick={() => setHistoryRange(range)}
                           className={cn(
                             "px-3 py-1.5 text-xs font-bold rounded-md transition-all",
-                            historyRange === range 
-                              ? "bg-white text-black shadow-sm" 
+                            historyRange === range
+                              ? "bg-white text-black shadow-sm"
                               : "text-zinc-500 hover:text-zinc-900"
                           )}
                         >
@@ -622,7 +623,7 @@ const Dashboard = () => {
             )}
 
             {activeTab === 'settings' && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
