@@ -1,0 +1,7 @@
+{
+  "name": "FuelTrack: Shift Reconciliation Truth Engine",
+  "description": "A production-ready financial dashboard for multi-branch fuel station operations, designed for Management by Exception and real-time variance detection.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
