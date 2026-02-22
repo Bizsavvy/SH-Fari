@@ -1,24 +1,26 @@
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import * as api from './lib/api';
+import ManualDataEntry from './components/ManualDataEntry';
+import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import {
   LayoutDashboard,
   History,
-  Receipt,
   Settings,
-  ChevronDown,
-  AlertCircle,
-  CheckCircle2,
-  Search,
-  Filter,
-  ArrowUpRight,
-  ArrowDownRight,
+  MoreHorizontal,
   LogOut,
-  Menu,
-  X,
-  Eye,
+  Search,
+  Upload as UploadIcon,
+  CheckCircle2,
+  AlertCircle,
+  Receipt,
+  FileEdit,
+  ChevronRight,
+  ChevronLeft,
+  Loader2,
   Check,
-  Ban
+  X
 } from 'lucide-react';
 import {
   flexRender,
@@ -26,7 +28,6 @@ import {
   useReactTable,
   getSortedRowModel,
   SortingState,
-  getFilteredRowModel,
   ColumnDef
 } from '@tanstack/react-table';
 import {
@@ -45,23 +46,7 @@ import { cn, formatNaira } from './lib/utils';
 
 const queryClient = new QueryClient();
 
-// --- Types ---
-interface ShiftData {
-  id: string;
-  shift_id: string;
-  attendant_id: string;
-  attendant_name: string;
-  pump_product: string;
-  opening_meter: number;
-  closing_meter: number;
-  expected_liters: number;
-  expected_amount: number;
-  cash_remitted: number;
-  pos_remitted: number;
-  expenses_total: number;
-  variance: number;
-}
-
+// Types
 interface Expense {
   id: string;
   shift_data_id: string;
@@ -71,181 +56,480 @@ interface Expense {
   attendant_name: string;
 }
 
-// --- Components ---
+const VarianceDisplay = ({ val, large = false }: { val: number, large?: boolean }) => (
+  <span className={cn(
+    "font-mono font-bold tracking-tight",
+    val < 0 ? "text-red-600" : val > 0 ? "text-emerald-600" : "text-zinc-900",
+    large ? "text-3xl md:text-5xl" : "text-sm"
+  )}>
+    {formatNaira(val)}
+  </span>
+);
+
+// --- Feedback & Utilities ---
+
+let globalToastFn: (msg: string) => void = () => { };
+
+const Toaster = () => {
+  const [toasts, setToasts] = useState<{ id: string, msg: string }[]>([]);
+
+  useEffect(() => {
+    globalToastFn = (msg: string) => {
+      const id = Math.random().toString();
+      setToasts(prev => [...prev, { id, msg }]);
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+    };
+  }, []);
+
+  return (
+    <div className="fixed bottom-8 right-8 z-50 flex flex-col gap-2">
+      <AnimatePresence>
+        {toasts.map(t => (
+          <motion.div
+            key={t.id}
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 20, scale: 0.95 }}
+            className="bg-zinc-900 text-white px-5 py-4 flex items-center gap-3 max-w-sm shadow-2xl rounded-sm"
+          >
+            <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
+            <p className="text-sm font-medium leading-snug">{t.msg}</p>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const notifyToast = (msg: string) => globalToastFn(msg);
+
+const SkeletonLoader = () => (
+  <div className="flex h-screen bg-white text-zinc-900 font-sans">
+    <aside className="w-56 bg-[#FAFAFA] border-r border-zinc-200 p-6 flex flex-col shrink-0 z-30 opacity-70">
+      <div className="mb-10 w-32 h-6 bg-zinc-200 animate-pulse rounded-sm" />
+      <div className="space-y-4 flex-1">
+        {[1, 2, 3, 4].map(i => <div key={i} className="w-full h-8 bg-zinc-200 animate-pulse rounded-sm" />)}
+      </div>
+    </aside>
+    <div className="flex-1 flex flex-col h-screen overflow-hidden">
+      <header className="h-14 border-b border-zinc-200 bg-white px-8 flex items-center justify-between shrink-0">
+        <div className="w-48 h-6 bg-zinc-100 animate-pulse rounded-sm" />
+      </header>
+      <div className="bg-white border-b border-zinc-200 px-8 py-8">
+        <div className="max-w-6xl mx-auto flex justify-between gap-6">
+          <div className="w-48 h-10 bg-zinc-100 animate-pulse rounded-sm" />
+          <div className="w-72 h-16 bg-zinc-100 animate-pulse rounded-sm" />
+        </div>
+      </div>
+      <div className="p-8 max-w-6xl mx-auto w-full space-y-4">
+        {[1, 2, 3].map(i => <div key={i} className="w-full h-16 bg-zinc-50 animate-pulse rounded-sm" />)}
+      </div>
+    </div>
+  </div>
+);
+
+// --- Subordinated UI Components ---
 
 const SidebarItem = ({ icon: Icon, label, active, onClick }: { icon: any, label: string, active?: boolean, onClick?: () => void }) => (
   <button
     onClick={onClick}
     className={cn(
-      "flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all duration-200",
-      active
-        ? "bg-black text-white shadow-lg shadow-black/10"
-        : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
+      "flex items-center gap-3 w-full px-3 py-2 text-sm transition-all duration-200 relative group",
+      active ? "text-zinc-900 font-bold" : "text-zinc-500 hover:text-zinc-900 font-medium"
     )}
   >
-    <Icon size={20} />
-    <span className="font-medium text-sm">{label}</span>
+    {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 bg-zinc-900 rounded-r-full" />}
+    <Icon size={16} strokeWidth={active ? 2.5 : 2} className={cn(active ? "text-zinc-900" : "text-zinc-400 group-hover:text-zinc-600 transition-colors")} />
+    <span>{label}</span>
   </button>
 );
 
-const StatCard = ({ title, value, subValue, trend, type = 'neutral' }: { title: string, value: string, subValue?: string, trend?: number, type?: 'neutral' | 'danger' | 'success' }) => (
-  <div className="bg-white p-6 rounded-2xl border border-zinc-100 shadow-sm">
-    <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">{title}</p>
-    <div className="flex items-end justify-between">
-      <div>
-        <h3 className={cn(
-          "text-2xl font-bold tracking-tight",
-          type === 'danger' ? "text-red-600" : type === 'success' ? "text-emerald-600" : "text-zinc-900"
-        )}>
-          {value}
-        </h3>
-        {subValue && <p className="text-sm text-zinc-500 mt-1">{subValue}</p>}
-      </div>
-      {trend !== undefined && (
-        <div className={cn(
-          "flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold",
-          trend >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
-        )}>
-          {trend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
-          {Math.abs(trend)}%
-        </div>
-      )}
-    </div>
-  </div>
-);
+// --- Truth Engine Tracking Components ---
 
-const ReconciliationTable = ({ data }: { data: ShiftData[] }) => {
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const [filterShortages, setFilterShortages] = useState(false);
-
-  const filteredData = useMemo(() => {
-    if (filterShortages) return data.filter(d => d.variance < 0);
-    return data;
-  }, [data, filterShortages]);
-
-  const columns = useMemo<ColumnDef<ShiftData>[]>(() => [
-    {
-      accessorKey: 'attendant_name',
-      header: 'Attendant',
-      cell: info => <span className="font-semibold text-zinc-900">{info.getValue() as string}</span>,
-    },
-    {
-      accessorKey: 'pump_product',
-      header: 'Product',
-      cell: info => <span className="text-xs font-bold px-2 py-1 bg-zinc-100 rounded text-zinc-600">{info.getValue() as string}</span>,
-    },
-    {
-      accessorKey: 'expected_amount',
-      header: 'Expected (₦)',
-      cell: info => <span className="font-mono text-sm">{formatNaira(info.getValue() as number)}</span>,
-    },
-    {
-      accessorKey: 'cash_remitted',
-      header: 'Cash (₦)',
-      cell: info => <span className="font-mono text-sm">{formatNaira(info.getValue() as number)}</span>,
-    },
-    {
-      accessorKey: 'pos_remitted',
-      header: 'POS (₦)',
-      cell: info => <span className="font-mono text-sm">{formatNaira(info.getValue() as number)}</span>,
-    },
-    {
-      accessorKey: 'expenses_total',
-      header: 'Expenses (₦)',
-      cell: info => <span className="font-mono text-sm text-zinc-500">{formatNaira(info.getValue() as number)}</span>,
-    },
-    {
-      accessorKey: 'variance',
-      header: 'Variance (₦)',
-      cell: info => {
-        const val = info.getValue() as number;
-        return (
-          <div className={cn(
-            "flex items-center gap-2 font-bold font-mono",
-            val < 0 ? "text-red-600" : val > 0 ? "text-emerald-600" : "text-zinc-400"
-          )}>
-            {val < 0 ? <AlertCircle size={14} /> : val === 0 ? <CheckCircle2 size={14} /> : null}
-            {formatNaira(val)}
-          </div>
-        );
-      },
-    },
-  ], []);
-
-  const table = useReactTable({
-    data: filteredData,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-  });
+const GlobalTracker = ({ matrix, navigateToLevel }: { matrix: any[], navigateToLevel: (level: 'global', branchId?: string) => void }) => {
+  const totals = matrix.reduce((acc, curr) => ({
+    expected: acc.expected + curr.totalExpected,
+    remitted: acc.remitted + curr.totalCash + curr.totalPos,
+    variance: acc.variance + curr.totalVariance,
+    expenses: acc.expenses + curr.pendingExpenseTotal
+  }), { expected: 0, remitted: 0, variance: 0, expenses: 0 });
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-100 shadow-sm overflow-hidden">
-      <div className="p-4 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
-        <h3 className="font-bold text-zinc-900">Attendant Reconciliation Matrix</h3>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setFilterShortages(!filterShortages)}
-            className={cn(
-              "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
-              filterShortages
-                ? "bg-red-600 text-white"
-                : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
-            )}
-          >
-            <Filter size={14} />
-            {filterShortages ? "Showing Shortages" : "Filter Shortages"}
-          </button>
+    <div className="bg-white border-b border-zinc-200 px-8 py-8 shrink-0 relative z-20">
+      <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-6">
+
+        <div className="cursor-pointer group flex flex-col" onClick={() => navigateToLevel('global')}>
+          <h1 className="text-2xl font-black tracking-tight leading-none text-zinc-900 group-hover:text-zinc-600 transition-colors">Global Ledger</h1>
+          <p className="text-[10px] text-zinc-400 font-bold tracking-widest uppercase mt-1">Live Math Sequence</p>
         </div>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            {table.getHeaderGroups().map(headerGroup => (
-              <tr key={headerGroup.id} className="border-b border-zinc-100">
-                {headerGroup.headers.map(header => (
-                  <th key={header.id} className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-                    {header.isPlaceholder ? null : (
-                      <div
-                        {...{
-                          className: header.column.getCanSort() ? 'cursor-pointer select-none flex items-center gap-1' : '',
-                          onClick: header.column.getToggleSortingHandler(),
-                        }}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        {{
-                          asc: ' ↑',
-                          desc: ' ↓',
-                        }[header.column.getIsSorted() as string] ?? null}
-                      </div>
-                    )}
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map(row => (
-              <tr key={row.id} className="border-b border-zinc-50 hover:bg-zinc-50/50 transition-colors">
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} className="px-6 py-4">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+        <div className="flex items-end gap-12">
+          {/* Subordinate data: Expected and Remitted */}
+          <div className="hidden md:block text-right">
+            <p className="text-[10px] text-zinc-400 font-bold tracking-widest uppercase mb-1">Expected Vol</p>
+            <p className="text-lg font-mono text-zinc-600">{formatNaira(totals.expected)}</p>
+          </div>
+          <div className="hidden md:block text-right">
+            <p className="text-[10px] text-zinc-400 font-bold tracking-widest uppercase mb-1">Remitted Vol</p>
+            <p className="text-lg font-mono text-zinc-600">{formatNaira(totals.remitted)}</p>
+          </div>
+          <div className="hidden sm:block text-right border-r border-zinc-200 pr-12">
+            <p className="text-[10px] text-zinc-400 font-bold tracking-widest uppercase mb-1">Pending Exp.</p>
+            <p className="text-lg font-mono text-zinc-600">{formatNaira(totals.expenses)}</p>
+          </div>
+
+          {/* Primary Focus: Net Variance */}
+          <div className="flex flex-col items-end">
+            <p className="text-[10px] text-zinc-900 font-black tracking-widest uppercase mb-2">Net System Variance</p>
+            <VarianceDisplay val={totals.variance} large />
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
+const BranchOverviewMatrix = ({ matrix, setActiveBranch }: { matrix: any[], setActiveBranch: (id: string) => void }) => {
+  return (
+    <div className="max-w-6xl mx-auto pt-4">
+      <div className="grid grid-cols-1 divide-y divide-zinc-100 border-t border-zinc-100">
+        <div className="flex items-center justify-between py-3 px-2">
+          <div className="w-1/3"><span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Branch</span></div>
+          <div className="w-2/3 flex items-center justify-between">
+            <div className="w-32 hidden md:block"><span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Expected</span></div>
+            <div className="w-32 hidden md:block"><span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Remitted & Exp.</span></div>
+            <div className="w-32 text-right"><span className="text-[10px] font-bold text-zinc-900 uppercase tracking-widest">Variance</span></div>
+            <div className="w-6" />
+          </div>
+        </div>
+
+        {matrix.map((row) => (
+          <div
+            key={row.branch.id}
+            onClick={() => setActiveBranch(row.branch.id)}
+            className="group py-4 px-2 cursor-pointer flex flex-col md:flex-row md:items-center justify-between transition-colors hover:bg-zinc-50"
+          >
+            <div className="flex flex-col gap-1 w-1/3 mb-2 md:mb-0">
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-zinc-900">{row.branch.name}</h3>
+                {row.shift && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="Active Shift" />}
+              </div>
+              {row.shift && <p className="text-xs text-zinc-400 font-medium">{row.items.length} Active Lines</p>}
+            </div>
+
+            <div className="flex items-center justify-between w-2/3">
+              <div className="hidden md:block w-32">
+                <p className="font-mono text-sm text-zinc-500">{formatNaira(row.totalExpected)}</p>
+              </div>
+              <div className="hidden md:block w-32">
+                <p className="font-mono text-sm text-zinc-500">{formatNaira(row.totalCash + row.totalPos + row.pendingExpenseTotal)}</p>
+              </div>
+              <div className="w-32 text-right">
+                <VarianceDisplay val={row.totalVariance} />
+              </div>
+              <ChevronRight size={16} className="text-zinc-300 group-hover:text-zinc-900 transition-transform group-hover:translate-x-1 ml-4" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+
+const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navigateBack: () => void }) => {
+  const queryClient = useQueryClient();
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [confirmAction, setConfirmAction] = useState<{ id: string, type: 'approve' | 'reject' } | null>(null);
+
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ expected: 0, cash: 0, pos: 0 });
+  const [isSaving, setIsSaving] = useState(false);
+
+  const approveMutation = useMutation({
+    mutationFn: (id: string) => api.approveExpense(id),
+    onSuccess: (_, variables) => {
+      const expense = branchData.pendingExpenses.find((e: any) => e.id === variables);
+      notifyToast(`Approved ${formatNaira(expense?.amount || 0)} for ${expense?.description || 'Expense'}.`);
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+    }
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (id: string) => api.rejectExpense(id),
+    onSuccess: (_, variables) => {
+      const expense = branchData.pendingExpenses.find((e: any) => e.id === variables);
+      notifyToast(`Rejected ${expense?.description || 'Expense'}. Logic recalculated.`);
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+    }
+  });
+
+  const updateShiftMutation = useMutation({
+    mutationFn: (data: { id: string, expected: number, cash: number, pos: number }) =>
+      api.updateShiftDataRecord(data.id, { expected_amount: data.expected, cash_remitted: data.cash, pos_remitted: data.pos }),
+    onSuccess: () => {
+      notifyToast("Shift record updated successfully.");
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+      setEditingRowId(null);
+    },
+    onSettled: () => setIsSaving(false),
+    onError: (err: any) => notifyToast(`Update failed: ${err.message}`)
+  });
+
+  const handleAction = (id: string, type: 'approve' | 'reject') => setConfirmAction({ id, type });
+
+  const executeAction = () => {
+    if (!confirmAction) return;
+    if (confirmAction.type === 'approve') approveMutation.mutate(confirmAction.id);
+    else rejectMutation.mutate(confirmAction.id);
+    setConfirmAction(null);
+  };
+
+  const startEditing = (row: any) => {
+    setEditingRowId(row.id);
+    setEditForm({ expected: row.expected_amount, cash: row.cash_remitted, pos: row.pos_remitted });
+  };
+
+  const saveEdit = (id: string) => {
+    setIsSaving(true);
+    updateShiftMutation.mutate({ id, expected: editForm.expected, cash: editForm.cash, pos: editForm.pos });
+  };
+
+  const columns = useMemo<ColumnDef<any>[]>(() => [
+    {
+      accessorKey: 'attendant_name',
+      header: 'Attendant',
+      cell: info => <span className="font-bold text-zinc-900">{info.getValue() as string}</span>,
+    },
+    {
+      accessorKey: 'pump_product',
+      header: 'Line',
+      cell: info => <span className="text-xs text-zinc-500 font-medium">{info.getValue() as string}</span>,
+    },
+    {
+      accessorKey: 'expected_amount',
+      header: 'Expected',
+      cell: info => {
+        const row = info.row.original;
+        if (editingRowId === row.id) return (
+          <input
+            type="number"
+            className="w-24 px-2 py-1 bg-zinc-100 border border-zinc-200 focus:outline-none focus:border-zinc-900 rounded-sm text-sm font-mono text-zinc-900 transition-colors"
+            value={editForm.expected}
+            onChange={e => setEditForm(prev => ({ ...prev, expected: Number(e.target.value) }))}
+          />
+        );
+        return <span className="font-mono text-sm">{formatNaira(info.getValue() as number)}</span>;
+      },
+    },
+    {
+      header: 'Remitted',
+      cell: info => {
+        const row = info.row.original;
+        if (editingRowId === row.id) return (
+          <div className="flex gap-1 items-center">
+            <input
+              type="number"
+              placeholder="Cash"
+              className="w-20 px-2 py-1 bg-zinc-100 border border-zinc-200 focus:outline-none focus:border-zinc-900 rounded-sm text-sm font-mono text-zinc-900 transition-colors"
+              value={editForm.cash}
+              onChange={e => setEditForm(prev => ({ ...prev, cash: Number(e.target.value) }))}
+            />
+            <span className="text-zinc-400 text-xs font-bold">+</span>
+            <input
+              type="number"
+              placeholder="POS"
+              className="w-20 px-2 py-1 bg-zinc-100 border border-zinc-200 focus:outline-none focus:border-zinc-900 rounded-sm text-sm font-mono text-zinc-900 transition-colors"
+              value={editForm.pos}
+              onChange={e => setEditForm(prev => ({ ...prev, pos: Number(e.target.value) }))}
+            />
+          </div>
+        );
+        return <span className="font-mono text-sm text-zinc-700">{formatNaira(row.cash_remitted + row.pos_remitted)}</span>;
+      },
+    },
+    {
+      accessorKey: 'variance',
+      header: 'Variance',
+      cell: info => {
+        const row = info.row.original;
+        if (editingRowId === row.id) {
+          const liveVariance = (editForm.cash + editForm.pos) - editForm.expected;
+          return <VarianceDisplay val={liveVariance} />;
+        }
+        return <VarianceDisplay val={info.getValue() as number} />;
+      },
+    },
+    {
+      id: 'actions',
+      header: '',
+      cell: info => {
+        const row = info.row.original;
+        if (editingRowId === row.id) return (
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => saveEdit(row.id)}
+              disabled={isSaving}
+              className="p-1 rounded bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 transition-colors"
+              title="Save Changes"
+            >
+              {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} strokeWidth={3} />}
+            </button>
+            <button
+              onClick={() => setEditingRowId(null)}
+              disabled={isSaving}
+              className="p-1 rounded bg-zinc-100 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200 transition-colors"
+              title="Cancel"
+            >
+              <X size={14} strokeWidth={3} />
+            </button>
+          </div>
+        );
+        return (
+          <div className="flex items-center justify-end">
+            <button
+              onClick={() => startEditing(row)}
+              className="p-1 text-zinc-300 hover:text-zinc-900 transition-colors"
+              title="Edit Record"
+            >
+              <FileEdit size={14} />
+            </button>
+          </div>
+        );
+      }
+    }
+  ], [editingRowId, editForm, isSaving]);
+
+  const table = useReactTable({
+    data: branchData.items,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
+  return (
+    <div className="max-w-6xl mx-auto pt-2 space-y-8">
+      <div className="flex items-center gap-2 mb-6">
+        <button onClick={navigateBack} className="text-zinc-400 hover:text-zinc-900 transition-colors flex items-center text-sm font-bold uppercase tracking-widest gap-1">
+          <ChevronLeft size={16} /> Back
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-12">
+        <div className="xl:col-span-2 space-y-4">
+          <h3 className="font-black text-xl tracking-tight text-zinc-900 border-b border-zinc-200 pb-2 mb-4">{branchData.branch.name} Ledger</h3>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                {table.getHeaderGroups().map(hg => (
+                  <tr key={hg.id} className="border-b border-zinc-200">
+                    {hg.headers.map(h => (
+                      <th key={h.id} className="py-3 px-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest whitespace-nowrap">
+                        {flexRender(h.column.columnDef.header, h.getContext())}
+                      </th>
+                    ))}
+                  </tr>
+                ))}
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {table.getRowModel().rows.map(row => (
+                  <tr key={row.id} className="hover:bg-zinc-50/50 transition-colors">
+                    {row.getVisibleCells().map(cell => (
+                      <td key={cell.id} className="py-4 px-2">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Action Required: Expenses (Restrained Design) */}
+        <div className="xl:col-span-1 border-l border-zinc-200 pl-8 space-y-4">
+          <div className="flex items-center justify-between border-b border-zinc-200 pb-2 mb-4">
+            <h3 className="font-black text-zinc-900">Pending Actions</h3>
+            {branchData.pendingExpenses.length > 0 && <span className="bg-zinc-900 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase">{branchData.pendingExpenses.length} Left</span>}
+          </div>
+
+          <div className="space-y-6">
+            {branchData.pendingExpenses.length === 0 ? (
+              <div className="py-12 text-zinc-400 text-sm">
+                <p className="font-bold text-zinc-900">All Math Reconciled</p>
+                <p className="mt-1">No pending expenses altering the live variance.</p>
+              </div>
+            ) : (
+              <AnimatePresence mode="popLayout">
+                {branchData.pendingExpenses.map((expense: any) => {
+                  const isConfirming = confirmAction?.id === expense.id;
+                  const isProcessing = approveMutation.isPending || rejectMutation.isPending;
+
+                  return (
+                    <motion.div
+                      key={expense.id}
+                      layout
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+                      className="space-y-3"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-bold text-sm text-zinc-900 leading-tight">{expense.description}</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mt-0.5">By {expense.attendant_name}</p>
+                        </div>
+                        <p className="font-mono text-base font-bold text-zinc-900">{formatNaira(expense.amount)}</p>
+                      </div>
+
+                      {isConfirming ? (
+                        <div className="flex bg-zinc-50 p-2 border border-zinc-200 items-center justify-between">
+                          <span className="text-xs font-bold text-zinc-900 uppercase tracking-widest">Are you sure?</span>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={executeAction}
+                              disabled={isProcessing}
+                              className={cn("text-xs font-bold px-3 py-1 text-white transition-colors", confirmAction.type === 'approve' ? "bg-zinc-900 hover:bg-zinc-800" : "bg-red-600 hover:bg-red-700")}
+                            >
+                              {isProcessing ? "Processing..." : confirmAction.type === 'approve' ? "Yes, Approve" : "Yes, Reject"}
+                            </button>
+                            <button onClick={() => setConfirmAction(null)} disabled={isProcessing} className="text-zinc-500 hover:text-zinc-900 font-bold text-xs px-2">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <button onClick={() => handleAction(expense.id, 'approve')} className="flex-1 text-zinc-900 font-bold text-xs py-1.5 border border-zinc-200 hover:border-zinc-900 hover:bg-zinc-50 transition-colors">
+                            Approve
+                          </button>
+                          <button onClick={() => handleAction(expense.id, 'reject')} className="text-zinc-500 hover:text-red-600 font-bold text-xs py-1.5 px-3 transition-colors">
+                            Reject
+                          </button>
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// --- Legacy Components for Tabs ---
+
 const ExpenseAudit = () => {
   const queryClient = useQueryClient();
+  const [confirmAction, setConfirmAction] = useState<{ id: string, type: 'approve' | 'reject' } | null>(null);
+
   const { data: expenses, isLoading } = useQuery<Expense[]>({
     queryKey: ['expenses', 'pending'],
     queryFn: () => api.getPendingExpenses()
@@ -253,81 +537,341 @@ const ExpenseAudit = () => {
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => api.approveExpense(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] })
+    onSuccess: (_, variables) => {
+      const expense = expenses?.find(e => e.id === variables);
+      notifyToast(`Approved ${formatNaira(expense?.amount || 0)} for ${expense?.description || 'Expense'}.`);
+      queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] });
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+    }
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => api.rejectExpense(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] })
+    onSuccess: (_, variables) => {
+      const expense = expenses?.find(e => e.id === variables);
+      notifyToast(`Rejected ${expense?.description || 'Expense'}. Logic recalculated.`);
+      queryClient.invalidateQueries({ queryKey: ['expenses', 'pending'] });
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+    }
   });
 
-  if (isLoading) return <div className="p-8 text-center text-zinc-400">Loading expenses...</div>;
+  const handleAction = (id: string, type: 'approve' | 'reject') => setConfirmAction({ id, type });
+  const executeAction = () => {
+    if (!confirmAction) return;
+    if (confirmAction.type === 'approve') approveMutation.mutate(confirmAction.id);
+    else rejectMutation.mutate(confirmAction.id);
+    setConfirmAction(null);
+  };
+
+  if (isLoading) return <div className="p-8 text-zinc-400 text-sm">Loading expenses...</div>;
   if (!expenses || expenses.length === 0) return (
-    <div className="p-12 text-center bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
-      <Receipt className="mx-auto text-zinc-300 mb-3" size={32} />
-      <p className="text-zinc-500 font-medium">No pending expenses to audit.</p>
+    <div className="py-12">
+      <p className="text-zinc-500 font-medium text-sm">No pending expenses to audit.</p>
     </div>
   );
 
   return (
-    <div className="space-y-4">
-      {expenses.map(expense => (
-        <motion.div
-          layout
-          key={expense.id}
-          className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm flex items-center justify-between"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-zinc-100 rounded-xl flex items-center justify-center text-zinc-500">
-              <Receipt size={24} />
-            </div>
-            <div>
-              <h4 className="font-bold text-zinc-900">{expense.description}</h4>
-              <p className="text-xs text-zinc-500">Claimed by <span className="font-bold text-zinc-700">{expense.attendant_name}</span></p>
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <p className="text-lg font-bold text-zinc-900">{formatNaira(expense.amount)}</p>
-              <button className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider flex items-center gap-1 hover:underline">
-                <Eye size={10} /> View Receipt
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => approveMutation.mutate(expense.id)}
-                className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 transition-colors"
-              >
-                <Check size={20} />
-              </button>
-              <button
-                onClick={() => rejectMutation.mutate(expense.id)}
-                className="p-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
-              >
-                <Ban size={20} />
-              </button>
-            </div>
-          </div>
-        </motion.div>
-      ))}
+    <div className="max-w-4xl space-y-6">
+      <AnimatePresence mode="popLayout">
+        {expenses.map(expense => {
+          const isConfirming = confirmAction?.id === expense.id;
+          const isProcessing = approveMutation.isPending || rejectMutation.isPending;
+
+          return (
+            <motion.div
+              layout
+              key={expense.id}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+              className="border-b border-zinc-100 pb-6 flex items-center justify-between"
+            >
+              <div className="flex items-center gap-4">
+                <div>
+                  <h4 className="font-bold text-zinc-900 text-sm">{expense.description}</h4>
+                  <p className="text-xs text-zinc-500 mt-1">Claimed by <span className="font-bold text-zinc-700">{expense.attendant_name}</span></p>
+                </div>
+              </div>
+              <div className="flex items-center gap-8">
+                <div className="text-right">
+                  <p className="text-base font-mono font-bold text-zinc-900">{formatNaira(expense.amount)}</p>
+                  <button className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider hover:text-zinc-900 transition-colors">
+                    View Receipt
+                  </button>
+                </div>
+
+                {isConfirming ? (
+                  <div className="flex bg-zinc-50 p-2 border border-zinc-200 items-center justify-between min-w-[200px]">
+                    <span className="text-xs font-bold text-zinc-900 uppercase tracking-widest pl-2">Are you sure?</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={executeAction}
+                        disabled={isProcessing}
+                        className={cn("text-xs font-bold px-3 py-1.5 text-white transition-colors", confirmAction.type === 'approve' ? "bg-zinc-900 hover:bg-zinc-800" : "bg-red-600 hover:bg-red-700")}
+                      >
+                        {isProcessing ? "Processing..." : confirmAction.type === 'approve' ? "Yes" : "Yes"}
+                      </button>
+                      <button onClick={() => setConfirmAction(null)} disabled={isProcessing} className="text-zinc-500 hover:text-zinc-900 font-bold text-xs px-2">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleAction(expense.id, 'approve')}
+                      className="px-4 py-2 border border-zinc-200 text-zinc-900 font-bold text-xs hover:border-zinc-900 transition-colors hover:bg-zinc-50"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => handleAction(expense.id, 'reject')}
+                      className="px-4 py-2 text-zinc-500 hover:text-red-600 font-bold text-xs transition-colors"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          );
+        })}
+      </AnimatePresence>
     </div>
   );
 };
 
-const Dashboard = () => {
-  const [activeBranch, setActiveBranch] = useState('br-yola');
-  const [activeTab, setActiveTab] = useState('overview');
-  const [historyRange, setHistoryRange] = useState(30);
+
+const CsvImporter = () => {
+  const queryClient = useQueryClient();
+  const [file, setFile] = useState<File | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [preview, setPreview] = useState<any[]>([]);
+  const [parsedData, setParsedData] = useState<any[] | null>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>('');
 
   const { data: branches } = useQuery({
     queryKey: ['branches'],
-    queryFn: () => api.getBranches()
+    queryFn: api.getBranches
   });
 
-  const { data: shiftData, isLoading: shiftLoading } = useQuery<{ shift: any, data: ShiftData[] }>({
-    queryKey: ['shift', activeBranch],
-    queryFn: () => api.getActiveShift(activeBranch),
-    refetchInterval: 30000 // Poll every 30s
+  const uploadMutation = useMutation({
+    mutationFn: api.uploadShiftDataBatch,
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+      notifyToast(`Imported ${data.count} shift records successfully`);
+      setFile(null);
+      setPreview([]);
+      setParsedData(null);
+    },
+    onError: (err: any) => {
+      notifyToast(`Upload failed: ${err.message}`);
+    }
+  });
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedBranchId) {
+      notifyToast('Please select a Target Branch before uploading.');
+      return;
+    }
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+    setFile(selected);
+
+    const fileExt = selected.name.split('.').pop()?.toLowerCase();
+
+    if (fileExt === 'csv') {
+      Papa.parse(selected, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results: any) => {
+          const mapped = results.data.map((r: any) => ({ ...r, branch_id: selectedBranchId }));
+          setParsedData(mapped);
+          setPreview(mapped.slice(0, 5));
+        }
+      });
+    } else if (fileExt === 'xlsx' || fileExt === 'xls') {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+
+        // Custom Parser for Complex Template
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+        const extractedData: any[] = [];
+        let currentProduct = 'PMS';
+
+        let amountIdx = 8;
+        let receiptIdx = 9;
+
+        // Find header indices dynamically
+        for (let r = 0; r < Math.min(rows.length, 30); r++) {
+          if (!rows[r]) continue;
+          const firstCol = String(rows[r][0] || '').toUpperCase().trim();
+          if (firstCol === 'NAME') {
+            const foundAmount = rows[r].findIndex((c: any) => String(c).toUpperCase().includes('AMOUNT'));
+            const foundReceipt = rows[r].findIndex((c: any) => String(c).toUpperCase().includes('RECEIPT'));
+            if (foundAmount !== -1) amountIdx = foundAmount;
+            if (foundReceipt !== -1) receiptIdx = foundReceipt;
+            break;
+          }
+        }
+
+        for (let r = 0; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+
+          const col0 = String(row[0] || '').trim();
+          const col1 = String(row[1] || '').trim();
+
+          if (col0.toUpperCase().includes('AGO') || col1.toUpperCase().includes('AGO')) {
+            currentProduct = 'AGO';
+            continue;
+          }
+          if (col0.toUpperCase().includes('PMS') || col1.toUpperCase().includes('PMS')) {
+            currentProduct = 'PMS';
+            continue;
+          }
+
+          // Skip header rows and sumaries
+          if (!col0 || col0 === 'NAME' || col0 === 'TOTAL' || col0 === 'SUMMARY' || col0 === 'TANKS' || col0 === 'PMS' || col0.includes('AGO') || col0.includes('SHIFT') || col1 === '1ST DIPPING') {
+            continue;
+          }
+
+          const amountStr = String(row[amountIdx] || '').replace(/,/g, '');
+          const receiptStr = String(row[receiptIdx] || '').replace(/,/g, '');
+          const amount = parseFloat(amountStr);
+          const receipt = parseFloat(receiptStr);
+
+          if (!isNaN(amount) && amount > 0) {
+            extractedData.push({
+              branch_id: selectedBranchId,
+              attendant_name: col0,
+              pump_product: currentProduct,
+              expected_amount: amount,
+              cash_remitted: !isNaN(receipt) ? receipt : 0,
+              pos_remitted: 0
+            });
+          }
+        }
+
+        setParsedData(extractedData);
+        setPreview(extractedData.slice(0, 5));
+      };
+      reader.readAsBinaryString(selected);
+    } else {
+      notifyToast('Unsupported format. Please select CSV or Excel.');
+      setFile(null);
+    }
+  };
+
+  const executeImport = async () => {
+    if (!parsedData || parsedData.length === 0) return;
+    setIsProcessing(true);
+    await uploadMutation.mutateAsync(parsedData);
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="border border-zinc-200 bg-white p-8">
+      <div className="mb-6">
+        <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Target Branch</label>
+        <select
+          value={selectedBranchId}
+          onChange={(e) => setSelectedBranchId(e.target.value)}
+          className="w-full text-sm font-medium border border-zinc-200 outline-none focus:border-zinc-500 bg-[#FAFAFA] p-3 transition-colors text-zinc-900"
+        >
+          <option value="">-- Select a Target Branch to assign this Sheet to --</option>
+          {branches?.map((b: any) => (
+            <option key={b.id} value={b.id}>{b.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className={`flex flex-col items-center justify-center p-12 border-2 border-dashed border-zinc-200 hover:border-zinc-400 transition-colors ${selectedBranchId ? 'bg-[#FAFAFA]' : 'bg-zinc-50 opacity-50'} relative overflow-hidden group`}>
+        <input
+          type="file"
+          accept=".csv, .xlsx, .xls"
+          onChange={handleFileUpload}
+          disabled={!selectedBranchId}
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
+        />
+        <UploadIcon size={32} className="text-zinc-300 group-hover:text-zinc-900 transition-colors mb-4" />
+        <p className="font-bold text-sm text-zinc-900">{file ? file.name : 'Drag & Drop your Fari Shift Report (Excel)'}</p>
+        <p className="text-xs text-zinc-500 mt-1">{file ? 'Ready for import preview' : 'We will automatically extract multiple shifts, products and attendants'}</p>
+      </div>
+
+      {preview.length > 0 && (
+        <div className="mt-8">
+          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-900 mb-4">Extracted Data Preview</h4>
+          <div className="border border-zinc-200 overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr>
+                  {Object.keys(preview[0]).filter(key => key !== 'branch_id').map((key) => (
+                    <th key={key} className="py-2 px-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 bg-[#FAFAFA]">
+                      {key}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {preview.map((row: any, i: number) => (
+                  <tr key={i}>
+                    {Object.keys(row).filter(key => key !== 'branch_id').map((key: string, j: number) => (
+                      <td key={j} className="py-2 px-4 text-xs text-zinc-600 truncate max-w-[150px]">
+                        {row[key] as React.ReactNode}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-6 flex justify-end gap-4">
+            <button
+              onClick={() => { setFile(null); setPreview([]); setParsedData(null); }}
+              className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-900 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={executeImport}
+              disabled={isProcessing}
+              className="px-6 py-2 bg-zinc-900 text-white text-xs font-bold hover:bg-zinc-800 transition-colors flex items-center gap-2"
+            >
+              {isProcessing && <Loader2 size={14} className="animate-spin" />}
+              {isProcessing ? 'Injecting Data...' : 'Confirm Bulk Import'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Main Application ---
+
+const Dashboard = () => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'settings' | 'expenses' | 'entry'>('overview');
+  const [level, setLevel] = useState<'global' | 'branch'>('global');
+  const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
+  const [historyRange, setHistoryRange] = useState(30);
+
+  // Interaction Fix: Reset visual stack when tab changes. Prevent ghosting.
+  useEffect(() => {
+    if (activeTab !== 'overview') {
+      setLevel('global');
+      setActiveBranchId(null);
+    }
+  }, [activeTab]);
+
+  const { data: matrix, isLoading } = useQuery({
+    queryKey: ['global_overview'],
+    queryFn: () => api.getGlobalOverview(),
+    refetchInterval: 10000
   });
 
   const { data: trendData } = useQuery({
@@ -335,349 +879,254 @@ const Dashboard = () => {
     queryFn: () => api.getTrendData()
   });
 
-  const totals = useMemo(() => {
-    if (!shiftData?.data) return { revenue: 0, pos: 0, variance: 0 };
-    return shiftData.data.reduce((acc, curr) => ({
-      revenue: acc.revenue + curr.expected_amount,
-      pos: acc.pos + curr.pos_remitted,
-      variance: acc.variance + curr.variance
-    }), { revenue: 0, pos: 0, variance: 0 });
-  }, [shiftData]);
+  const activeBranchData = useMemo(() => {
+    if (!matrix || !activeBranchId) return null;
+    return matrix.find(m => m.branch.id === activeBranchId);
+  }, [matrix, activeBranchId]);
+
+  const selectBranch = (id: string) => {
+    setActiveBranchId(id);
+    setLevel('branch');
+  };
+
+  const navigateToGlobal = () => {
+    setLevel('global');
+    setActiveBranchId(null);
+  };
+
+  if (isLoading) return <SkeletonLoader />;
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] text-zinc-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Sidebar */}
-      <aside className="w-64 border-r border-zinc-200 bg-white p-6 flex flex-col">
-        <div className="flex items-center gap-3 mb-10 px-2">
-          <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center text-white font-black italic">F</div>
+    <div className="flex h-screen bg-white text-zinc-900 font-sans selection:bg-zinc-200 selection:text-zinc-900">
+      <Toaster />
+
+      {/* Restrained Sidebar */}
+      <aside className="w-56 bg-[#FAFAFA] border-r border-zinc-200 p-6 flex flex-col shrink-0 z-30">
+        <div className="mb-10 px-2 opacity-80">
           <h1 className="text-xl font-black tracking-tight">FuelTrack.</h1>
         </div>
 
         <nav className="space-y-1 flex-1">
           <SidebarItem icon={LayoutDashboard} label="Live Shift" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
+          <SidebarItem icon={FileEdit} label="Manual Entry" active={activeTab === 'entry'} onClick={() => setActiveTab('entry')} />
           <SidebarItem icon={History} label="Historical Reports" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           <SidebarItem icon={Receipt} label="Expense Audit" active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} />
           <SidebarItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </nav>
 
-        <div className="mt-auto pt-6 border-t border-zinc-100">
-          <div className="flex items-center gap-3 px-2 mb-4">
-            <div className="w-10 h-10 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center overflow-hidden">
+        <div className="mt-auto pt-6 border-t border-zinc-200">
+          <div className="flex items-center gap-3 px-2 mb-6">
+            <div className="w-8 h-8 rounded bg-zinc-200 overflow-hidden grayscale">
               <img src="https://picsum.photos/seed/gm/100/100" alt="GM" referrerPolicy="no-referrer" />
             </div>
             <div>
-              <p className="text-sm font-bold">Adebayo O.</p>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">General Manager</p>
+              <p className="text-xs font-bold">Adebayo O.</p>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Admin</p>
             </div>
           </div>
-          <button className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-50 transition-colors font-bold text-sm">
-            <LogOut size={20} />
+          <button className="flex items-center gap-3 w-full px-2 text-zinc-400 hover:text-zinc-900 transition-colors font-bold text-xs uppercase tracking-widest">
+            <LogOut size={14} />
             Logout
           </button>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
-        {/* Top Bar */}
-        <header className="h-20 border-b border-zinc-200 bg-white/80 backdrop-blur-md sticky top-0 z-10 px-8 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h2 className="text-lg font-bold">Shift Reconciliation</h2>
-            <div className="h-4 w-px bg-zinc-200 mx-2" />
-            <div className="relative">
-              <select
-                value={activeBranch}
-                onChange={(e) => setActiveBranch(e.target.value)}
-                className="appearance-none bg-zinc-50 border border-zinc-200 rounded-lg px-4 py-2 pr-10 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-black/5 cursor-pointer"
-              >
-                {branches?.map((b: any) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </select>
-              <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
-            </div>
-          </div>
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
 
-          <div className="flex items-center gap-3">
+        {/* Subtle Utilities Header */}
+        <header className="h-14 border-b border-zinc-200 bg-white px-8 flex items-center justify-between shrink-0">
+          <div className="flex gap-4">
             <div className="relative">
-              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-              <input
-                type="text"
-                placeholder="Search transactions..."
-                className="bg-zinc-50 border border-zinc-200 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black/5 w-64"
-              />
+              <Search size={14} className="absolute left-0 top-1/2 -translate-y-1/2 text-zinc-400" />
+              <input type="text" placeholder="Search data..." className="bg-transparent pl-6 py-2 text-sm text-zinc-900 placeholder:text-zinc-300 focus:outline-none w-48" />
             </div>
-            <button className="bg-black text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-zinc-800 transition-colors shadow-lg shadow-black/10">
-              Close Shift
-            </button>
           </div>
+          <button className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-900 transition-colors">Close Shift</button>
         </header>
 
-        <div className="p-8 max-w-7xl mx-auto space-y-8">
-          <AnimatePresence mode="wait">
-            {activeTab === 'overview' && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-8"
-              >
-                {/* KPI Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <StatCard
-                    title="Total Shift Revenue"
-                    value={formatNaira(totals.revenue)}
-                    subValue="Expected from meters"
-                    trend={12}
-                  />
-                  <StatCard
-                    title="POS Settlements"
-                    value={formatNaira(totals.pos)}
-                    subValue="Claimed by attendants"
-                    trend={-2}
-                  />
-                  <StatCard
-                    title="Net True Variance"
-                    value={formatNaira(totals.variance)}
-                    subValue="Cash shortage/excess"
-                    type={totals.variance < 0 ? 'danger' : totals.variance > 0 ? 'success' : 'neutral'}
-                  />
-                </div>
+        {activeTab === 'overview' && <GlobalTracker matrix={matrix || []} navigateToLevel={navigateToGlobal} />}
 
-                {/* Main Table Section */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xl font-black tracking-tight">Active Reconciliation</h3>
-                    <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Last synced: Just now</p>
+        <main className="flex-1 overflow-y-auto">
+          <div className={cn("px-8 pb-12", activeTab !== 'overview' && "pt-12 max-w-6xl mx-auto")}>
+            <AnimatePresence mode="wait">
+              {activeTab === 'overview' && (
+                <motion.div
+                  key="overview-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  {level === 'global' && <BranchOverviewMatrix matrix={matrix || []} setActiveBranch={selectBranch} />}
+                  {level === 'branch' && activeBranchData && <ActiveShiftLedger branchData={activeBranchData} navigateBack={navigateToGlobal} />}
+                </motion.div>
+              )}
+
+              {activeTab === 'expenses' && (
+                <motion.div
+                  key="expenses-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <div className="mb-10">
+                    <h3 className="text-2xl font-black tracking-tight mb-2">Expense Audit</h3>
+                    <p className="text-zinc-500 text-sm">Review standard expenses isolated from the live ledger math.</p>
                   </div>
-                  {shiftLoading ? (
-                    <div className="h-64 bg-white rounded-2xl border border-zinc-100 animate-pulse" />
-                  ) : (
-                    <ReconciliationTable data={shiftData?.data || []} />
-                  )}
-                </div>
+                  <ExpenseAudit />
+                </motion.div>
+              )}
 
-                {/* Charts Section */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="bg-white p-6 rounded-2xl border border-zinc-100 shadow-sm">
-                    <h4 className="font-bold mb-6 text-zinc-900">7-Day Variance Trend</h4>
-                    <div className="h-[240px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={trendData}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F1F1" />
-                          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                          <Tooltip
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: number) => [formatNaira(value), 'Variance']}
-                          />
-                          <Line type="monotone" dataKey="variance" stroke="#EF4444" strokeWidth={3} dot={{ r: 4, fill: '#EF4444', strokeWidth: 2, stroke: '#FFF' }} activeDot={{ r: 6 }} />
-                        </LineChart>
-                      </ResponsiveContainer>
+              {activeTab === 'history' && (
+                <motion.div
+                  key="history-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <div className="flex items-center justify-between mb-10">
+                    <div>
+                      <h3 className="text-2xl font-black tracking-tight mb-2">Historical Reports</h3>
+                      <p className="text-zinc-500 text-sm">Variance records and finalized audits across all branches.</p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex border border-zinc-200 rounded">
+                        {[30, 60, 90].map((range) => (
+                          <button
+                            key={range}
+                            onClick={() => setHistoryRange(range)}
+                            className={cn(
+                              "px-4 py-2 text-xs font-bold transition-colors",
+                              historyRange === range ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-zinc-900"
+                            )}
+                          >
+                            {range}D
+                          </button>
+                        ))}
+                      </div>
+                      <button className="text-xs font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors">Export CSV</button>
                     </div>
                   </div>
-                  <div className="bg-white p-6 rounded-2xl border border-zinc-100 shadow-sm">
-                    <h4 className="font-bold mb-6 text-zinc-900">POS Claimed vs Bank Actual</h4>
-                    <div className="h-[240px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={[
-                          { name: 'Mon', claimed: 450000, actual: 445000 },
-                          { name: 'Tue', claimed: 320000, actual: 320000 },
-                          { name: 'Wed', claimed: 510000, actual: 490000 },
-                          { name: 'Thu', claimed: 280000, actual: 280000 },
-                          { name: 'Fri', claimed: 620000, actual: 615000 },
-                        ]}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F1F1" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                          <Bar dataKey="claimed" fill="#E4E4E7" radius={[4, 4, 0, 0]} />
-                          <Bar dataKey="actual" fill="#000" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
 
-            {activeTab === 'expenses' && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-6"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-2xl font-black tracking-tight">Expense Audit</h3>
-                    <p className="text-zinc-500 text-sm">Review and approve petty cash claims for the current shift.</p>
-                  </div>
-                  <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold">
-                    <AlertCircle size={14} />
-                    {totals.variance < 0 ? "High Variance Detected" : "Shift Healthy"}
-                  </div>
-                </div>
-                <ExpenseAudit />
-              </motion.div>
-            )}
-
-            {activeTab === 'history' && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-6"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-2xl font-black tracking-tight">Historical Reports</h3>
-                    <p className="text-zinc-500 text-sm">Review performance and variance trends across all branches.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex bg-zinc-100 p-1 rounded-lg border border-zinc-200">
-                      {[30, 60, 90].map((range) => (
-                        <button
-                          key={range}
-                          onClick={() => setHistoryRange(range)}
-                          className={cn(
-                            "px-3 py-1.5 text-xs font-bold rounded-md transition-all",
-                            historyRange === range
-                              ? "bg-white text-black shadow-sm"
-                              : "text-zinc-500 hover:text-zinc-900"
-                          )}
-                        >
-                          {range} Days
-                        </button>
-                      ))}
-                    </div>
-                    <button className="px-4 py-2 bg-black text-white rounded-lg text-sm font-bold hover:bg-zinc-800 transition-colors">Export PDF</button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  {[
-                    { label: 'Avg. Daily Revenue', value: historyRange === 30 ? '₦4.2M' : historyRange === 60 ? '₦4.5M' : '₦4.8M', trend: historyRange === 30 ? 5 : historyRange === 60 ? 7 : 10 },
-                    { label: 'Avg. Daily Variance', value: historyRange === 30 ? '-₦12.5k' : historyRange === 60 ? '-₦10.2k' : '-₦8.4k', trend: -2, danger: true },
-                    { label: 'Total POS Volume', value: historyRange === 30 ? '₦28.4M' : historyRange === 60 ? '₦58.2M' : '₦92.1M', trend: 8 },
-                    { label: 'Audit Score', value: historyRange === 30 ? '94%' : historyRange === 60 ? '92%' : '95%', trend: 1 },
-                  ].map((stat, i) => (
-                    <div key={i} className="bg-white p-4 rounded-xl border border-zinc-100 shadow-sm">
-                      <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">{stat.label}</p>
-                      <div className="flex items-center justify-between">
-                        <span className={cn("text-lg font-bold", stat.danger ? "text-red-600" : "text-zinc-900")}>{stat.value}</span>
-                        <span className={cn("text-[10px] font-bold", stat.trend >= 0 ? "text-emerald-600" : "text-red-600")}>
-                          {stat.trend > 0 ? '+' : ''}{stat.trend}%
-                        </span>
+                  {/* Stripped down Charts */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-12">
+                    <div>
+                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">7-Day Variance Trend</h4>
+                      <div className="h-[200px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={trendData}>
+                            <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="#FAFAFA" />
+                            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
+                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
+                            <Tooltip cursor={{ stroke: '#F4F4F5' }} contentStyle={{ borderRadius: '0', border: '1px solid #E4E4E7', boxShadow: 'none' }} formatter={(value: number) => [formatNaira(value), 'Variance']} />
+                            <Line type="monotone" dataKey="variance" stroke="#18181A" strokeWidth={2} dot={{ r: 3, fill: '#18181A', strokeWidth: 0 }} activeDot={{ r: 4 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
                       </div>
                     </div>
-                  ))}
-                </div>
+                    <div>
+                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">POS Claimed vs Actual</h4>
+                      <div className="h-[200px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={[
+                            { name: 'Mon', claimed: 450000, actual: 445000 },
+                            { name: 'Tue', claimed: 320000, actual: 320000 },
+                            { name: 'Wed', claimed: 510000, actual: 490000 },
+                            { name: 'Thu', claimed: 280000, actual: 280000 },
+                            { name: 'Fri', claimed: 620000, actual: 615000 }
+                          ]}>
+                            <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="#FAFAFA" />
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
+                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
+                            <Tooltip cursor={{ fill: '#FAFAFA' }} contentStyle={{ borderRadius: '0', border: '1px solid #E4E4E7', boxShadow: 'none' }} />
+                            <Bar dataKey="claimed" fill="#E4E4E7" radius={0} />
+                            <Bar dataKey="actual" fill="#18181A" radius={0} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
 
-                <div className="bg-white rounded-2xl border border-zinc-100 shadow-sm overflow-hidden">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-zinc-50/50">
-                      <tr className="border-b border-zinc-100">
-                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Date</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Branch</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Total Sales</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Variance</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { date: 'Feb 20, 2024', branch: 'Yola Main', sales: '₦3,450,000', var: '-₦4,500', status: 'Audited' },
-                        { date: 'Feb 20, 2024', branch: 'Gombi Station', sales: '₦1,200,000', var: '₦0', status: 'Audited' },
-                        { date: 'Feb 19, 2024', branch: 'Kebbi North', sales: '₦2,800,000', var: '-₦12,000', status: 'Flagged' },
-                        { date: 'Feb 19, 2024', branch: 'Jigawa Central', sales: '₦4,100,000', var: '₦2,500', status: 'Audited' },
-                        { date: 'Feb 18, 2024', branch: 'Yola Main', sales: '₦3,100,000', var: '-₦1,200', status: 'Audited' },
-                        ...(historyRange >= 60 ? [
-                          { date: 'Jan 15, 2024', branch: 'Yola Main', sales: '₦3,200,000', var: '-₦2,500', status: 'Audited' },
-                          { date: 'Jan 14, 2024', branch: 'Kebbi North', sales: '₦2,950,000', var: '-₦8,000', status: 'Audited' },
-                        ] : []),
-                        ...(historyRange >= 90 ? [
-                          { date: 'Dec 12, 2023', branch: 'Gombi Station', sales: '₦1,150,000', var: '₦0', status: 'Audited' },
-                          { date: 'Dec 10, 2023', branch: 'Jigawa Central', sales: '₦4,300,000', var: '-₦15,000', status: 'Flagged' },
-                        ] : []),
-                      ].map((row, i) => (
-                        <tr key={i} className="border-b border-zinc-50 hover:bg-zinc-50/50 transition-colors">
-                          <td className="px-6 py-4 text-sm font-medium text-zinc-600">{row.date}</td>
-                          <td className="px-6 py-4 text-sm font-bold text-zinc-900">{row.branch}</td>
-                          <td className="px-6 py-4 text-sm font-mono">{row.sales}</td>
-                          <td className={cn("px-6 py-4 text-sm font-mono font-bold", row.var.startsWith('-') ? "text-red-600" : row.var === '₦0' ? "text-zinc-400" : "text-emerald-600")}>{row.var}</td>
-                          <td className="px-6 py-4">
-                            <span className={cn(
-                              "text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider",
-                              row.status === 'Audited' ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
-                            )}>
-                              {row.status}
-                            </span>
-                          </td>
+                  <div className="border-t border-zinc-200">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Date</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Branch</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 text-right">Total Sales</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 text-right">Final Variance</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </motion.div>
-            )}
-
-            {activeTab === 'settings' && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="max-w-2xl space-y-8"
-              >
-                <div>
-                  <h3 className="text-2xl font-black tracking-tight">System Settings</h3>
-                  <p className="text-zinc-500 text-sm">Configure operational thresholds and branch metadata.</p>
-                </div>
-
-                <div className="space-y-6">
-                  <section className="space-y-4">
-                    <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Variance Thresholds</h4>
-                    <div className="bg-white p-6 rounded-2xl border border-zinc-100 shadow-sm space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-bold">Critical Shortage Alert</p>
-                          <p className="text-xs text-zinc-500">Flag shifts with variance exceeding this amount.</p>
-                        </div>
-                        <input type="text" defaultValue="₦10,000" className="bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm font-mono w-32 text-right" />
-                      </div>
-                      <div className="h-px bg-zinc-100" />
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-bold">Auto-Audit Tolerance</p>
-                          <p className="text-xs text-zinc-500">Automatically mark shifts as audited if variance is below this.</p>
-                        </div>
-                        <input type="text" defaultValue="₦500" className="bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm font-mono w-32 text-right" />
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="space-y-4">
-                    <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Branch Management</h4>
-                    <div className="bg-white rounded-2xl border border-zinc-100 shadow-sm divide-y divide-zinc-100">
-                      {['Yola Main', 'Gombi Station', 'Jigawa Central', 'Kebbi North'].map((branch) => (
-                        <div key={branch} className="p-4 flex items-center justify-between">
-                          <span className="text-sm font-bold">{branch}</span>
-                          <button className="text-xs font-bold text-indigo-600 hover:underline">Edit Config</button>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <div className="flex justify-end gap-3">
-                    <button className="px-6 py-2 bg-zinc-100 text-zinc-600 rounded-lg text-sm font-bold hover:bg-zinc-200 transition-colors">Discard Changes</button>
-                    <button className="px-6 py-2 bg-black text-white rounded-lg text-sm font-bold hover:bg-zinc-800 transition-colors">Save Settings</button>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100">
+                        {[
+                          { date: 'Feb 20, 2024', branch: 'Yola Main', sales: 3450000, var: -4500 },
+                          { date: 'Feb 20, 2024', branch: 'Gombi Station', sales: 1200000, var: 0 },
+                          { date: 'Feb 19, 2024', branch: 'Kebbi North', sales: 2800000, var: -12000 },
+                          { date: 'Feb 19, 2024', branch: 'Jigawa Central', sales: 4100000, var: 2500 }
+                        ].map((row, i) => (
+                          <tr key={i}>
+                            <td className="py-4 text-sm text-zinc-500">{row.date}</td>
+                            <td className="py-4 text-sm font-bold text-zinc-900">{row.branch}</td>
+                            <td className="py-4 text-sm font-mono text-zinc-500 text-right">{formatNaira(row.sales)}</td>
+                            <td className="py-4 text-right">
+                              <VarianceDisplay val={row.var} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </main>
+                </motion.div>
+              )}
+
+              {activeTab === 'entry' && (
+                <motion.div
+                  key="entry-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <ManualDataEntry />
+                </motion.div>
+              )}
+
+              {activeTab === 'settings' && (
+                <motion.div
+                  key="settings-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <div className="mb-10">
+                    <h3 className="text-2xl font-black tracking-tight mb-2">System Settings</h3>
+                    <p className="text-zinc-500 text-sm">Configure operational thresholds and branch metadata.</p>
+                  </div>
+
+                  <div className="max-w-4xl space-y-12">
+                    <section>
+                      <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-widest mb-4 border-b border-zinc-200 pb-2">Mass Data Injection</h4>
+                      <CsvImporter />
+                    </section>
+
+                    <section>
+                      <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-widest mb-4 border-b border-zinc-200 pb-2">Variance Thresholds</h4>
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-bold text-zinc-900">Critical Shortage Alert</p>
+                            <p className="text-xs text-zinc-500 mt-1">Flag shifts with variance exceeding this amount.</p>
+                          </div>
+                          <input type="text" defaultValue="₦10,000" className="bg-transparent border-b border-zinc-200 py-1 text-sm font-mono w-32 text-right focus:outline-none focus:border-zinc-900" />
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </main>
+      </div>
     </div>
   );
 };
