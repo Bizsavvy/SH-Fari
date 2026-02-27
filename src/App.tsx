@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient
 import React, { useState, useMemo, useEffect } from 'react';
 import * as api from './lib/api';
 import ManualDataEntry from './components/ManualDataEntry';
+import CashAnalysis from './components/CashAnalysis';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import {
@@ -20,7 +21,10 @@ import {
   ChevronLeft,
   Loader2,
   Check,
-  X
+  X,
+  Trash2,
+  Calendar,
+  Filter
 } from 'lucide-react';
 import {
   flexRender,
@@ -60,7 +64,7 @@ const VarianceDisplay = ({ val, large = false }: { val: number, large?: boolean 
   <span className={cn(
     "font-mono font-bold tracking-tight",
     val < 0 ? "text-red-600" : val > 0 ? "text-emerald-600" : "text-zinc-900",
-    large ? "text-3xl md:text-5xl" : "text-sm"
+    large ? "text-3xl md:text-4xl" : "text-sm"
   )}>
     {formatNaira(val)}
   </span>
@@ -234,6 +238,86 @@ const BranchOverviewMatrix = ({ matrix, setActiveBranch }: { matrix: any[], setA
       </div>
     </div>
   );
+}; const AttendantModal = ({ isOpen, onClose, branchId, attendantName, shiftDate, shiftTime }: any) => {
+  const { data, isLoading } = useQuery({
+    queryKey: ['attendant_drilldown', branchId, attendantName, shiftDate, shiftTime],
+    queryFn: () => api.getAttendantDrillDown(branchId, attendantName, shiftDate, shiftTime),
+    enabled: isOpen && !!attendantName
+  });
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-white/80 backdrop-blur-sm" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 10 }}
+        className="relative bg-white border border-zinc-200 shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200">
+          <div>
+            <h3 className="font-black text-xl text-zinc-900 leading-none">{attendantName}</h3>
+            <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1.5">Shift Profile Details</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-zinc-100 transition-colors rounded-sm text-zinc-500 hover:text-zinc-900 hover:scale-105 active:scale-95">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-10">
+          {isLoading ? (
+            <div className="py-24 flex justify-center text-zinc-400"><Loader2 className="animate-spin" size={24} /></div>
+          ) : (
+            <>
+              <section>
+                <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">Cash Analysis Locker</h4>
+                {data?.cashReport ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {Object.entries(data.cashReport.denominations).sort(([a], [b]) => Number(b) - Number(a)).map(([denom, count]: any) => {
+                      if (count === 0) return null;
+                      return (
+                        <div key={denom} className="bg-zinc-50 p-4 border border-zinc-100 flex flex-col justify-center items-center shadow-sm">
+                          <span className="text-sm font-black text-zinc-900">₦{denom}</span>
+                          <span className="text-xs text-zinc-500 font-mono font-medium">x {count}</span>
+                        </div>
+                      );
+                    })}
+                    <div className="col-span-full mt-4 flex justify-between items-end border-t border-zinc-200 pt-6">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Physical Vault Total:</span>
+                      <span className="text-2xl font-mono text-zinc-900 font-black tracking-tight">{formatNaira(data.cashReport.total_cash)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500 font-medium">No physical breakdown logged for this attendant.</p>
+                )}
+              </section>
+
+              <section>
+                <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">Recorded Expense Matrix</h4>
+                {data?.expenses && data.expenses.length > 0 ? (
+                  <div className="space-y-3">
+                    {data.expenses.map((e: any) => (
+                      <div key={e.id} className="flex justify-between items-center p-4 border border-zinc-100 bg-white shadow-sm">
+                        <div>
+                          <p className="font-bold text-zinc-900 text-sm">{e.description}</p>
+                          <span className={cn("text-[9px] font-black uppercase tracking-widest px-2 py-0.5 mt-1 inline-block", e.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' : e.status === 'REJECTED' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800')}>{e.status}</span>
+                        </div>
+                        <span className="font-mono text-zinc-900 font-bold tracking-tight">{formatNaira(e.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500 font-medium">Zero expenses were deducted during this shift segment.</p>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
 };
 
 
@@ -243,8 +327,84 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
   const [confirmAction, setConfirmAction] = useState<{ id: string, type: 'approve' | 'reject' } | null>(null);
 
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ expected: 0, cash: 0, pos: 0 });
+  const [editForm, setEditForm] = useState({ expected: 0, cash: 0, pos: 0, date: '' });
   const [isSaving, setIsSaving] = useState(false);
+
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [selectedAttendant, setSelectedAttendant] = useState<string | null>(null);
+
+  // Filter state
+  const [datePreset, setDatePreset] = useState<'today' | 'this_week' | 'last_week' | 'this_month' | 'custom' | 'all'>('all');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [productFilter, setProductFilter] = useState<'all' | 'PMS' | 'AGO'>('all');
+
+  // Compute date range from preset
+  const getDateRange = useMemo(() => {
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const day = now.getDay(); // 0=Sun
+    switch (datePreset) {
+      case 'today':
+        return { from: todayStr, to: todayStr };
+      case 'this_week': {
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - (day === 0 ? 6 : day - 1)); // Mon
+        return { from: startOfWeek.toISOString().split('T')[0], to: todayStr };
+      }
+      case 'last_week': {
+        const startOfThisWeek = new Date(now);
+        startOfThisWeek.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+        const endOfLastWeek = new Date(startOfThisWeek);
+        endOfLastWeek.setDate(endOfLastWeek.getDate() - 1);
+        const startOfLastWeek = new Date(endOfLastWeek);
+        startOfLastWeek.setDate(startOfLastWeek.getDate() - 6);
+        return { from: startOfLastWeek.toISOString().split('T')[0], to: endOfLastWeek.toISOString().split('T')[0] };
+      }
+      case 'this_month': {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { from: startOfMonth.toISOString().split('T')[0], to: todayStr };
+      }
+      case 'custom':
+        return { from: customFrom || '2020-01-01', to: customTo || todayStr };
+      default:
+        return null; // 'all' — no filter
+    }
+  }, [datePreset, customFrom, customTo]);
+
+  // Filtered items
+  const filteredItems = useMemo(() => {
+    let items = branchData.items || [];
+    // Date filter
+    if (getDateRange) {
+      items = items.filter((item: any) => {
+        const d = item.shift_date;
+        if (!d) return false;
+        return d >= getDateRange.from && d <= getDateRange.to;
+      });
+    }
+    // Product filter
+    if (productFilter !== 'all') {
+      items = items.filter((item: any) =>
+        item.pump_product?.toUpperCase().includes(productFilter)
+      );
+    }
+    return items;
+  }, [branchData.items, getDateRange, productFilter]);
+
+  const deleteShiftMutation = useMutation({
+    mutationFn: () => api.deleteOpenShiftByBranch(branchData.branch.id),
+    onSuccess: () => {
+      notifyToast(`Purged Station Ledger for ${branchData.branch.name}`);
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+      setIsDeleting(false);
+      navigateBack();
+    },
+    onError: (err: any) => {
+      notifyToast(`Failed to purge ledger: ${err.message}`);
+      setIsDeleting(false);
+    }
+  });
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => api.approveExpense(id),
@@ -265,8 +425,8 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
   });
 
   const updateShiftMutation = useMutation({
-    mutationFn: (data: { id: string, expected: number, cash: number, pos: number }) =>
-      api.updateShiftDataRecord(data.id, { expected_amount: data.expected, cash_remitted: data.cash, pos_remitted: data.pos }),
+    mutationFn: (data: { id: string, expected: number, cash: number, pos: number, date: string }) =>
+      api.updateShiftDataRecord(data.id, { expected_amount: data.expected, cash_remitted: data.cash, pos_remitted: data.pos, shift_date: data.date }),
     onSuccess: () => {
       notifyToast("Shift record updated successfully.");
       queryClient.invalidateQueries({ queryKey: ['global_overview'] });
@@ -287,24 +447,42 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
 
   const startEditing = (row: any) => {
     setEditingRowId(row.id);
-    setEditForm({ expected: row.expected_amount, cash: row.cash_remitted, pos: row.pos_remitted });
+    setEditForm({ expected: row.expected_amount, cash: row.cash_remitted, pos: row.pos_remitted, date: row.shift_date || '' });
   };
 
   const saveEdit = (id: string) => {
     setIsSaving(true);
-    updateShiftMutation.mutate({ id, expected: editForm.expected, cash: editForm.cash, pos: editForm.pos });
+    updateShiftMutation.mutate({ id, expected: editForm.expected, cash: editForm.cash, pos: editForm.pos, date: editForm.date });
   };
 
   const columns = useMemo<ColumnDef<any>[]>(() => [
     {
       accessorKey: 'attendant_name',
       header: 'Attendant',
-      cell: info => <span className="font-bold text-zinc-900">{info.getValue() as string}</span>,
+      cell: info => <span onClick={() => setSelectedAttendant(info.getValue() as string)} className="font-bold text-zinc-900 cursor-pointer hover:underline underline-offset-2">{info.getValue() as string}</span>,
     },
     {
       accessorKey: 'pump_product',
       header: 'Line',
       cell: info => <span className="text-xs text-zinc-500 font-medium">{info.getValue() as string}</span>,
+    },
+    {
+      accessorKey: 'shift_date',
+      header: 'Date',
+      cell: info => {
+        const row = info.row.original;
+        if (editingRowId === row.id) return (
+          <input
+            type="date"
+            className="w-32 px-2 py-1 bg-zinc-100 border border-zinc-200 focus:outline-none focus:border-zinc-900 rounded-sm text-xs font-mono text-zinc-900 transition-colors"
+            value={editForm.date}
+            onChange={e => setEditForm(prev => ({ ...prev, date: e.target.value }))}
+          />
+        );
+        const d = info.getValue() as string;
+        if (!d) return <span className="text-xs text-zinc-400">—</span>;
+        return <span className="text-xs text-zinc-500 font-mono">{new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</span>;
+      },
     },
     {
       accessorKey: 'expected_amount',
@@ -401,7 +579,7 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
   ], [editingRowId, editForm, isSaving]);
 
   const table = useReactTable({
-    data: branchData.items,
+    data: filteredItems,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -411,6 +589,16 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
 
   return (
     <div className="max-w-6xl mx-auto pt-2 space-y-8">
+      {selectedAttendant && (
+        <AttendantModal
+          isOpen={!!selectedAttendant}
+          onClose={() => setSelectedAttendant(null)}
+          branchId={branchData.branch.id}
+          attendantName={selectedAttendant}
+          shiftDate={branchData.shift?.shift_date || new Date().toISOString().split('T')[0]}
+          shiftTime={branchData.shift?.shift_time || 'Morning'}
+        />
+      )}
       <div className="flex items-center gap-2 mb-6">
         <button onClick={navigateBack} className="text-zinc-400 hover:text-zinc-900 transition-colors flex items-center text-sm font-bold uppercase tracking-widest gap-1">
           <ChevronLeft size={16} /> Back
@@ -419,7 +607,114 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-12">
         <div className="xl:col-span-2 space-y-4">
-          <h3 className="font-black text-xl tracking-tight text-zinc-900 border-b border-zinc-200 pb-2 mb-4">{branchData.branch.name} Ledger</h3>
+          <div className="flex flex-col md:flex-row md:items-end justify-between border-b border-zinc-200 pb-2 mb-4 gap-4">
+            <div>
+              <h3 className="font-black text-xl tracking-tight text-zinc-900 leading-none">{branchData.branch.name} Ledger</h3>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1.5">
+                {filteredItems.length} {filteredItems.length === 1 ? 'entry' : 'entries'}
+                {datePreset !== 'all' && ` — ${datePreset.replace('_', ' ')}`}
+                {productFilter !== 'all' && ` — ${productFilter} only`}
+              </p>
+            </div>
+
+            {isDeleting ? (
+              <div className="flex items-center gap-3 bg-red-50/50 border border-red-100 px-3 py-1.5 rounded-sm">
+                <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest">Delete Entire Shift? / Irreversible</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => deleteShiftMutation.mutate()}
+                    disabled={deleteShiftMutation.isPending}
+                    className="text-[10px] font-bold bg-red-600 text-white px-3 py-1 hover:bg-red-700 transition-colors shadow-sm disabled:opacity-50"
+                  >
+                    {deleteShiftMutation.isPending ? 'Purging...' : 'Yes, Purge'}
+                  </button>
+                  <button
+                    onClick={() => setIsDeleting(false)}
+                    disabled={deleteShiftMutation.isPending}
+                    className="text-[10px] font-bold text-zinc-500 hover:text-zinc-900 px-3 py-1 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsDeleting(true)}
+                className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-red-600 transition-colors group"
+                title="Clear Station Ledger"
+              >
+                <Trash2 size={14} className="group-hover:scale-110 transition-transform" /> Clear Station
+              </button>
+            )}
+          </div>
+
+          {/* Filter Bar */}
+          <div className="flex flex-wrap items-center gap-3 py-3 border-b border-zinc-100">
+            <div className="flex items-center gap-1.5 mr-2">
+              <Calendar size={13} className="text-zinc-400" />
+              <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Date:</span>
+            </div>
+            {([
+              ['all', 'All'],
+              ['today', 'Today'],
+              ['this_week', 'This Week'],
+              ['last_week', 'Last Week'],
+              ['this_month', 'This Month'],
+              ['custom', 'Custom'],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setDatePreset(key)}
+                className={cn(
+                  "text-[10px] font-bold px-3 py-1 transition-colors",
+                  datePreset === key
+                    ? "bg-zinc-900 text-white shadow-sm"
+                    : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+
+            {datePreset === 'custom' && (
+              <div className="flex items-center gap-2 ml-1">
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={e => setCustomFrom(e.target.value)}
+                  className="text-[10px] border border-zinc-200 bg-zinc-50 px-2 py-1 focus:outline-none focus:border-zinc-900"
+                />
+                <span className="text-zinc-300 text-xs">→</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={e => setCustomTo(e.target.value)}
+                  className="text-[10px] border border-zinc-200 bg-zinc-50 px-2 py-1 focus:outline-none focus:border-zinc-900"
+                />
+              </div>
+            )}
+
+            <div className="h-4 w-px bg-zinc-200 mx-2" />
+
+            <div className="flex items-center gap-1.5 mr-1">
+              <Filter size={13} className="text-zinc-400" />
+              <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Product:</span>
+            </div>
+            {(['all', 'PMS', 'AGO'] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => setProductFilter(v)}
+                className={cn(
+                  "text-[10px] font-bold px-3 py-1 transition-colors",
+                  productFilter === v
+                    ? "bg-zinc-900 text-white shadow-sm"
+                    : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900"
+                )}
+              >
+                {v === 'all' ? 'All' : v}
+              </button>
+            ))}
+          </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left">
@@ -855,7 +1150,7 @@ const CsvImporter = () => {
 // --- Main Application ---
 
 const Dashboard = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'settings' | 'expenses' | 'entry'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'settings' | 'expenses' | 'entry' | 'cash-analysis'>('overview');
   const [level, setLevel] = useState<'global' | 'branch'>('global');
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [historyRange, setHistoryRange] = useState(30);
@@ -875,8 +1170,14 @@ const Dashboard = () => {
   });
 
   const { data: trendData } = useQuery({
-    queryKey: ['stats', 'trend'],
-    queryFn: () => api.getTrendData()
+    queryKey: ['stats', 'trend', historyRange],
+    queryFn: () => api.getTrendData(historyRange)
+  });
+
+  const { data: historyReports, isLoading: isHistoryLoading } = useQuery({
+    queryKey: ['historical_reports', historyRange],
+    queryFn: () => api.getHistoricalReports(historyRange),
+    refetchInterval: 10000
   });
 
   const activeBranchData = useMemo(() => {
@@ -887,6 +1188,16 @@ const Dashboard = () => {
   const selectBranch = (id: string) => {
     setActiveBranchId(id);
     setLevel('branch');
+  };
+
+  const exportCsv = () => {
+    if (!historyReports || historyReports.length === 0) return alert('No data to export');
+    const csv = Papa.unparse(historyReports);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `fari_cash_analysis_${historyRange}d.csv`;
+    link.click();
   };
 
   const navigateToGlobal = () => {
@@ -909,6 +1220,7 @@ const Dashboard = () => {
         <nav className="space-y-1 flex-1">
           <SidebarItem icon={LayoutDashboard} label="Live Shift" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
           <SidebarItem icon={FileEdit} label="Manual Entry" active={activeTab === 'entry'} onClick={() => setActiveTab('entry')} />
+          <SidebarItem icon={Receipt} label="Cash Analysis" active={activeTab === 'cash-analysis'} onClick={() => setActiveTab('cash-analysis')} />
           <SidebarItem icon={History} label="Historical Reports" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           <SidebarItem icon={Receipt} label="Expense Audit" active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} />
           <SidebarItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
@@ -1004,14 +1316,14 @@ const Dashboard = () => {
                           </button>
                         ))}
                       </div>
-                      <button className="text-xs font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors">Export CSV</button>
+                      <button onClick={exportCsv} className="text-xs font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors">Export CSV</button>
                     </div>
                   </div>
 
                   {/* Stripped down Charts */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-12">
                     <div>
-                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">7-Day Variance Trend</h4>
+                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">{historyRange}-DAY VARIANCE TREND</h4>
                       <div className="h-[200px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={trendData}>
@@ -1028,13 +1340,7 @@ const Dashboard = () => {
                       <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">POS Claimed vs Actual</h4>
                       <div className="h-[200px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={[
-                            { name: 'Mon', claimed: 450000, actual: 445000 },
-                            { name: 'Tue', claimed: 320000, actual: 320000 },
-                            { name: 'Wed', claimed: 510000, actual: 490000 },
-                            { name: 'Thu', claimed: 280000, actual: 280000 },
-                            { name: 'Fri', claimed: 620000, actual: 615000 }
-                          ]}>
+                          <BarChart data={trendData || []}>
                             <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="#FAFAFA" />
                             <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
                             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
@@ -1047,30 +1353,34 @@ const Dashboard = () => {
                     </div>
                   </div>
 
-                  <div className="border-t border-zinc-200">
+                  <div className="border-t border-zinc-200 mt-8">
+                    <h4 className="font-bold text-sm text-zinc-900 mb-4 px-2 uppercase tracking-widest mt-6">Latest Cash Analysis Reports</h4>
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr>
-                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Date</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Date & Time</th>
                           <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Branch</th>
-                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 text-right">Total Sales</th>
-                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 text-right">Final Variance</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200">Attendant & Pump</th>
+                          <th className="py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 text-right">Total Cash Verified</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-100">
-                        {[
-                          { date: 'Feb 20, 2024', branch: 'Yola Main', sales: 3450000, var: -4500 },
-                          { date: 'Feb 20, 2024', branch: 'Gombi Station', sales: 1200000, var: 0 },
-                          { date: 'Feb 19, 2024', branch: 'Kebbi North', sales: 2800000, var: -12000 },
-                          { date: 'Feb 19, 2024', branch: 'Jigawa Central', sales: 4100000, var: 2500 }
-                        ].map((row, i) => (
+                        {isHistoryLoading ? (
+                          <tr><td colSpan={4} className="text-center py-8 text-sm text-zinc-500">Loading reports...</td></tr>
+                        ) : (historyReports || []).length === 0 ? (
+                          <tr><td colSpan={4} className="text-center py-8 text-sm text-zinc-500">No Historical Cash Reports Found</td></tr>
+                        ) : (historyReports || []).map((row: any, i: number) => (
                           <tr key={i}>
-                            <td className="py-4 text-sm text-zinc-500">{row.date}</td>
-                            <td className="py-4 text-sm font-bold text-zinc-900">{row.branch}</td>
-                            <td className="py-4 text-sm font-mono text-zinc-500 text-right">{formatNaira(row.sales)}</td>
-                            <td className="py-4 text-right">
-                              <VarianceDisplay val={row.var} />
+                            <td className="py-4 whitespace-nowrap">
+                              <div className="text-sm font-bold text-zinc-900">{new Date(row.shift_date || row.created_at).toLocaleDateString()}</div>
+                              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{row.shift_time || 'Morning'}</div>
                             </td>
+                            <td className="py-4 text-sm font-bold text-zinc-900">{row.branch}</td>
+                            <td className="py-4 text-sm">
+                              <div className="font-bold text-zinc-900">{row.attendant}</div>
+                              <div className="text-xs text-zinc-500">{row.product}</div>
+                            </td>
+                            <td className="py-4 text-sm font-mono text-zinc-900 font-bold text-right">{formatNaira(row.total_cash)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1087,6 +1397,17 @@ const Dashboard = () => {
                   exit={{ opacity: 0, y: -10 }}
                 >
                   <ManualDataEntry />
+                </motion.div>
+              )}
+
+              {activeTab === 'cash-analysis' && (
+                <motion.div
+                  key="cash-analysis-tab"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <CashAnalysis />
                 </motion.div>
               )}
 

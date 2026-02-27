@@ -1,29 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { useForm, useFieldArray, useWatch } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { Trash2, Plus, AlertCircle, CheckCircle2, Loader2, Save } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { AlertCircle, CheckCircle2, Loader2, Save } from 'lucide-react';
+import { motion } from 'motion/react';
 import { submitManualShiftData, getBranches } from '../lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { cn } from '../lib/utils'; // Assuming this exists or I'll just use a tiny helper
 
-const expenseSchema = z.object({
-    description: z.string().min(1, "Required"),
-    amount: z.number().min(0, "Must be ≥ 0") // Fix: Allow 0 instead of strict positive if they type 0, but min 0 protects negatives
-});
 
 const formSchema = z.object({
     branch_id: z.string().min(1, "Branch required"),
     attendant_name: z.string().min(1, "Name required"),
     pump_number: z.string().min(1, "Pump required"),
     product_type: z.enum(["PMS", "AGO"]),
+    shift_date: z.string().min(1, "Date required"),
+    shift_time: z.enum(["Morning", "Evening"]),
     price_per_liter: z.number().min(1, "Price required"),
     opening_meter: z.number().min(0, "Opening meter required"),
     closing_meter: z.number().min(0, "Closing meter required"),
     cash_remitted: z.number().min(0, "Must be ≥ 0"),
     pos_remitted: z.number().min(0, "Must be ≥ 0"),
-    expenses: z.array(expenseSchema).optional()
 }).refine(data => data.closing_meter >= data.opening_meter, {
     message: "Closing meter must be ≥ Opening meter",
     path: ["closing_meter"]
@@ -61,18 +58,14 @@ export default function ManualDataEntry() {
             attendant_name: '',
             pump_number: 'Pump 1',
             product_type: 'PMS',
+            shift_date: new Date().toISOString().split('T')[0],
+            shift_time: 'Morning',
             price_per_liter: 880,
             opening_meter: 0,
             closing_meter: 0,
             cash_remitted: 0,
             pos_remitted: 0,
-            expenses: []
         }
-    });
-
-    const { fields, append, remove } = useFieldArray({
-        control,
-        name: "expenses"
     });
 
     // Real-time watchers
@@ -82,13 +75,11 @@ export default function ManualDataEntry() {
     const price = Number(watchAll.price_per_liter) || 0;
     const cash = Number(watchAll.cash_remitted) || 0;
     const pos = Number(watchAll.pos_remitted) || 0;
-    const expensesList = watchAll.expenses || [];
 
     // Auto-Calculations
     const litersSold = Math.max(0, closingMeter - openingMeter);
     const expectedRevenue = litersSold * price;
-    const sumOfExpenses = expensesList.reduce((acc, curr) => acc + (Number(curr?.amount) || 0), 0);
-    const totalRemitted = cash + pos + sumOfExpenses;
+    const totalRemitted = cash + pos;
     const trueVariance = totalRemitted - expectedRevenue;
 
     const mutation = useMutation({
@@ -145,6 +136,21 @@ export default function ManualDataEntry() {
                                     ))}
                                 </select>
                                 {errors.branch_id && <span className="text-red-400 text-xs mt-1 block">{errors.branch_id.message}</span>}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className={labelClass}>Shift Date</label>
+                                    <input {...register("shift_date")} type="date" className={inputClass} />
+                                    {errors.shift_date && <span className="text-red-400 text-xs mt-1 block">{errors.shift_date.message}</span>}
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Shift Time</label>
+                                    <select {...register("shift_time")} className={cn(inputClass, "appearance-none")}>
+                                        <option value="Morning">Morning</option>
+                                        <option value="Evening">Evening</option>
+                                    </select>
+                                </div>
                             </div>
 
                             <div>
@@ -232,7 +238,7 @@ export default function ManualDataEntry() {
                             Actual Collections (Remittance)
                         </h3>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <label className={labelClass}>Total Physical Cash (₦)</label>
                                 <div className="relative">
@@ -249,66 +255,6 @@ export default function ManualDataEntry() {
                                 </div>
                                 {errors.pos_remitted && <span className="text-red-400 text-xs mt-1 block">{errors.pos_remitted.message}</span>}
                             </div>
-                        </div>
-
-                        {/* Expenses Array */}
-                        <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-lg p-6">
-                            <div className="flex items-center justify-between mb-4">
-                                <h4 className="text-sm font-bold text-zinc-300">Deducted Shift Expenses</h4>
-                                <button
-                                    type="button"
-                                    onClick={() => append({ description: '', amount: 0 })}
-                                    className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-zinc-400 hover:text-white transition-colors"
-                                >
-                                    <Plus size={14} /> Add Expense
-                                </button>
-                            </div>
-
-                            {fields.length === 0 ? (
-                                <div className="text-center py-6 border border-dashed border-zinc-800 rounded bg-zinc-950/30">
-                                    <p className="text-xs text-zinc-600 font-mono uppercase tracking-widest">No expenses claimed</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    <AnimatePresence>
-                                        {fields.map((field, index) => (
-                                            <motion.div
-                                                initial={{ opacity: 0, height: 0 }}
-                                                animate={{ opacity: 1, height: 'auto' }}
-                                                exit={{ opacity: 0, height: 0 }}
-                                                key={field.id}
-                                                className="flex items-start gap-4"
-                                            >
-                                                <div className="flex-1">
-                                                    <input
-                                                        {...register(`expenses.${index}.description` as const)}
-                                                        placeholder="Expense Description (e.g. Generator Fuel)"
-                                                        className={inputClass}
-                                                    />
-                                                    {errors.expenses?.[index]?.description && <span className="text-red-400 text-xs mt-1 block">{errors.expenses[index]?.description?.message}</span>}
-                                                </div>
-                                                <div className="w-48 relative">
-                                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm">₦</span>
-                                                    <input
-                                                        {...register(`expenses.${index}.amount` as const, { valueAsNumber: true })}
-                                                        type="number"
-                                                        placeholder="Amount"
-                                                        className={cn(inputClass, "pl-8 text-right")}
-                                                    />
-                                                    {errors.expenses?.[index]?.amount && <span className="text-red-400 text-xs mt-1 block">{errors.expenses[index]?.amount?.message}</span>}
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => remove(index)}
-                                                    className="p-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-md transition-colors"
-                                                >
-                                                    <Trash2 size={16} />
-                                                </button>
-                                            </motion.div>
-                                        ))}
-                                    </AnimatePresence>
-                                </div>
-                            )}
                         </div>
                     </section>
 

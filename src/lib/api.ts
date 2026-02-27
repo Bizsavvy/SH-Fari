@@ -69,28 +69,71 @@ export async function rejectExpense(id: string) {
     return { success: true };
 }
 
-export async function getTrendData() {
-    // Use mock for trend data as originally handled by dummy server.ts endpoint
-    return [
-        { date: '2024-02-15', variance: -5000 },
-        { date: '2024-02-16', variance: -2000 },
-        { date: '2024-02-17', variance: 0 },
-        { date: '2024-02-18', variance: -12000 },
-        { date: '2024-02-19', variance: -3000 },
-        { date: '2024-02-20', variance: -1000 },
-        { date: '2024-02-21', variance: -18000 },
-    ];
+export async function getTrendData(days: number = 30) {
+    const historicalDate = new Date();
+    historicalDate.setDate(historicalDate.getDate() - days);
+
+    // Fetch shift_data joined with shifts within date range
+    const { data: shiftItems, error } = await supabase
+        .from('shift_data')
+        .select(`
+            expected_amount,
+            cash_remitted,
+            pos_remitted,
+            variance,
+            shifts!inner(shift_date, shift_time)
+        `)
+        .gte('shifts.shift_date', historicalDate.toISOString().split('T')[0]);
+
+    if (error) throw error;
+
+    // Aggregate by day
+    const aggregated = (shiftItems || []).reduce((acc: any, item: any) => {
+        const dateObj = new Date(item.shifts.shift_date);
+        const dateStr = dateObj.toISOString().split('T')[0];
+        const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+
+        if (!acc[dateStr]) {
+            acc[dateStr] = { date: dateStr, name: dayName, variance: 0, claimed: 0, actual: 0 };
+        }
+
+        acc[dateStr].variance += item.variance || 0;
+
+        // "Claimed POS" is loosely modeled here as what the system expected minus physical cash
+        const expectedPos = Math.max(0, (item.expected_amount || 0) - (item.cash_remitted || 0));
+        acc[dateStr].claimed += expectedPos;
+        acc[dateStr].actual += item.pos_remitted || 0;
+
+        return acc;
+    }, {});
+
+    // Ensure we send back an array sorted by Date
+    return Object.values(aggregated).sort((a: any, b: any) => a.date.localeCompare(b.date));
 }
 
 export async function getGlobalOverview() {
     const { data: branches } = await supabase.from('branches').select('*');
-    const { data: shifts } = await supabase.from('shifts').select('*').eq('status', 'OPEN');
+    // Fetch ALL shifts (not just OPEN) so date filters work across full ledger history
+    const { data: shifts } = await supabase.from('shifts').select('*').order('shift_date', { ascending: false });
 
     const shiftIds = shifts?.map(s => s.id) || [];
     let shiftDataItems: any[] = [];
     if (shiftIds.length > 0) {
         const { data: sd } = await supabase.from('shift_data').select('*, attendants(name)').in('shift_id', shiftIds);
-        shiftDataItems = sd?.map(item => ({ ...item, attendant_name: (item.attendants as any)?.name })) || [];
+        // Build a quick lookup: shift_id -> { shift_date, shift_time, status }
+        const shiftLookup = new Map<string, any>();
+        shifts?.forEach(s => shiftLookup.set(s.id, s));
+
+        shiftDataItems = sd?.map(item => {
+            const parentShift = shiftLookup.get(item.shift_id);
+            return {
+                ...item,
+                attendant_name: (item.attendants as any)?.name,
+                shift_date: parentShift?.shift_date || null,
+                shift_time: parentShift?.shift_time || null,
+                shift_status: parentShift?.status || 'OPEN'
+            };
+        }) || [];
     }
 
     let pendingExpenses: any[] = [];
@@ -105,8 +148,12 @@ export async function getGlobalOverview() {
     }
 
     const matrix = (branches || []).map(branch => {
-        const shift = shifts?.find(s => s.branch_id === branch.id);
-        const items = shift ? shiftDataItems.filter(sd => sd.shift_id === shift.id) : [];
+        // Collect ALL open shifts for this branch (there can be multiple per date/time)
+        const branchShifts = shifts?.filter(s => s.branch_id === branch.id) || [];
+        const branchShiftIds = branchShifts.map(s => s.id);
+        // Use the most recent shift as the "representative" shift for UI display
+        const shift = branchShifts.length > 0 ? branchShifts[0] : undefined; // sorted desc by shift_date
+        const items = shiftDataItems.filter(sd => branchShiftIds.includes(sd.shift_id));
         const expenses = items.length > 0 ? pendingExpenses.filter(e => items.find(sd => sd.id === e.shift_data_id)) : [];
 
         const totalExpected = items.reduce((sum, item) => sum + item.expected_amount, 0);
@@ -150,26 +197,42 @@ export async function uploadShiftDataBatch(csvRows: any[]) {
         const validBranchId = branchMap.get(branchInput) || branchMap.get(branchInput.toLowerCase());
         if (!validBranchId) return acc;
 
-        if (!acc[validBranchId]) acc[validBranchId] = [];
-        acc[validBranchId].push(row);
+        const rawDate = row.date || row.Date || row.shift_date;
+        const shift_date = rawDate ? new Date(rawDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const shift_time = row.time || row.Time || row.shift_time || 'Morning';
+
+        const groupKey = `${validBranchId}_${shift_date}_${shift_time}`;
+
+        if (!acc[groupKey]) acc[groupKey] = { branch_id: validBranchId, shift_date, shift_time, rows: [] };
+        acc[groupKey].rows.push(row);
         return acc;
     }, {});
 
     let totalInserted = 0;
 
-    for (const [branch_id, rows] of Object.entries(branchGroups)) {
-        // Ensure there is an open shift for this branch
+    for (const [groupKey, groupData] of Object.entries(branchGroups)) {
+        const { branch_id, shift_date, shift_time, rows } = groupData as any;
+
+        // Ensure there is an open shift for this branch/date/time
         let { data: shift } = await supabase
             .from('shifts')
             .select('id')
             .eq('branch_id', branch_id)
+            .eq('shift_date', shift_date)
+            .eq('shift_time', shift_time)
             .eq('status', 'OPEN')
             .single();
 
         if (!shift) {
             const { data: newShift, error } = await supabase
                 .from('shifts')
-                .insert({ id: crypto.randomUUID(), branch_id, status: 'OPEN' })
+                .insert({
+                    id: crypto.randomUUID(),
+                    branch_id,
+                    shift_date,
+                    shift_time,
+                    status: 'OPEN'
+                })
                 .select()
                 .single();
             if (error) throw error;
@@ -245,20 +308,28 @@ export async function uploadShiftDataBatch(csvRows: any[]) {
 }
 
 export async function submitManualShiftData(payload: any) {
-    const { branch_id, attendant_name, pump_number, product_type, price_per_liter, opening_meter, closing_meter, cash_remitted, pos_remitted, expenses } = payload;
+    const { branch_id, attendant_name, pump_number, product_type, price_per_liter, opening_meter, closing_meter, cash_remitted, pos_remitted, expenses, shift_date, shift_time } = payload;
 
     // 1. Ensure Open Shift
     let { data: shift } = await supabase
         .from('shifts')
         .select('id')
         .eq('branch_id', branch_id)
+        .eq('shift_date', shift_date)
+        .eq('shift_time', shift_time)
         .eq('status', 'OPEN')
         .single();
 
     if (!shift) {
         const { data: newShift, error } = await supabase
             .from('shifts')
-            .insert({ id: crypto.randomUUID(), branch_id, status: 'OPEN' })
+            .insert({
+                id: crypto.randomUUID(),
+                branch_id,
+                shift_date,
+                shift_time,
+                status: 'OPEN'
+            })
             .select()
             .single();
         if (error) throw error;
@@ -316,7 +387,7 @@ export async function submitManualShiftData(payload: any) {
     return { success: true };
 }
 
-export async function updateShiftDataRecord(id: string, updates: { expected_amount: number, cash_remitted: number, pos_remitted: number }) {
+export async function updateShiftDataRecord(id: string, updates: { expected_amount: number, cash_remitted: number, pos_remitted: number, shift_date?: string }) {
     const variance = (updates.cash_remitted + updates.pos_remitted) - updates.expected_amount;
     const { data, error } = await supabase
         .from('shift_data')
@@ -331,5 +402,163 @@ export async function updateShiftDataRecord(id: string, updates: { expected_amou
         .single();
 
     if (error) throw error;
+
+    // Update shift_date on parent shift if provided
+    if (updates.shift_date && data?.shift_id) {
+        await supabase.from('shifts').update({ shift_date: updates.shift_date }).eq('id', data.shift_id);
+    }
+
     return data;
+}
+
+export async function submitCashAnalysis(payload: {
+    branch_id: string;
+    attendant_name: string;
+    pump_number: number;
+    product_type: string;
+    denominations: any;
+    total_cash: number;
+    shift_date: string;
+    shift_time: string;
+}) {
+    const { error } = await supabase
+        .from('cash_analysis_reports')
+        .insert([{
+            id: crypto.randomUUID(),
+            branch_id: payload.branch_id,
+            attendant_name: payload.attendant_name,
+            pump_number: payload.pump_number,
+            product_type: payload.product_type,
+            denominations: payload.denominations,
+            total_cash: payload.total_cash,
+            shift_date: payload.shift_date,
+            shift_time: payload.shift_time
+        }]);
+
+    if (error) throw error;
+    return { success: true };
+}
+
+export async function getHistoricalReports(days: number = 30) {
+    const historicalDate = new Date();
+    historicalDate.setDate(historicalDate.getDate() - days);
+
+    const { data, error } = await supabase
+        .from('cash_analysis_reports')
+        .select(`
+            id,
+            created_at,
+            attendant_name,
+            pump_number,
+            product_type,
+            total_cash,
+            shift_date,
+            shift_time,
+            branches ( name )
+        `)
+        .gte('shift_date', historicalDate.toISOString().split('T')[0])
+        .order('shift_date', { ascending: false })
+        .order('shift_time', { ascending: false });
+
+    if (error) throw error;
+
+    return (data || []).map((item: any) => ({
+        id: item.id,
+        date: new Date(item.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        branch: item.branches?.name || 'Unknown Branch',
+        attendant: item.attendant_name,
+        product: `${item.product_type} - Pump ${item.pump_number}`,
+        total_cash: item.total_cash,
+        shift_date: item.shift_date,
+        shift_time: item.shift_time
+    }));
+}
+
+export async function deleteOpenShiftByBranch(branchId: string) {
+    // 1. Fetch the OPEN shift for the branch
+    const { data: shift, error: fetchErr } = await supabase
+        .from('shifts')
+        .select('id')
+        .eq('branch_id', branchId)
+        .eq('status', 'OPEN')
+        .single();
+
+    if (fetchErr || !shift) return { success: false, message: 'No open shift found to delete.' };
+
+    // cascade deletion: shift_data and expenses (assume if cascade is strict we just need to delete shift_data)
+    // To be safe, we explicitly find them
+    const { data: shiftDataItems } = await supabase
+        .from('shift_data')
+        .select('id')
+        .eq('shift_id', shift.id);
+
+    const shiftDataIds = shiftDataItems?.map(sd => sd.id) || [];
+
+    if (shiftDataIds.length > 0) {
+        // Purge expenses safely
+        await supabase.from('expenses').delete().in('shift_data_id', shiftDataIds);
+        // Purge shift data
+        await supabase.from('shift_data').delete().in('id', shiftDataIds);
+    }
+
+    // Finally, delete the shift itself
+    const { error: deleteShiftErr } = await supabase.from('shifts').delete().eq('id', shift.id);
+    if (deleteShiftErr) throw deleteShiftErr;
+
+    return { success: true };
+}
+
+export async function getAttendantDrillDown(branchId: string, attendantName: string, shiftDate: string, shiftTime: string) {
+    // Phase 1: Try to locate latest Cash Analysis for this exact shift profile
+    const { data: cashReports } = await supabase
+        .from('cash_analysis_reports')
+        .select('*')
+        .eq('branch_id', branchId)
+        .ilike('attendant_name', attendantName)
+        .eq('shift_date', shiftDate)
+        .eq('shift_time', shiftTime)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+    const cashReport = cashReports && cashReports.length > 0 ? cashReports[0] : null;
+
+    // Phase 2: Pull expenses explicitly tracking this user in the active shift
+    // We locate the exact shift_data rows first
+    const { data: shift } = await supabase
+        .from('shifts')
+        .select('id')
+        .eq('branch_id', branchId)
+        .eq('shift_date', shiftDate)
+        .eq('shift_time', shiftTime)
+        .eq('status', 'OPEN')
+        .single();
+
+    let expenses: any[] = [];
+    if (shift) {
+        const { data: attendants } = await supabase
+            .from('attendants')
+            .select('id')
+            .eq('branch_id', branchId)
+            .ilike('name', attendantName)
+            .single();
+
+        if (attendants) {
+            const { data: shiftDataRows } = await supabase
+                .from('shift_data')
+                .select('id')
+                .eq('shift_id', shift.id)
+                .eq('attendant_id', attendants.id);
+
+            const sdIds = shiftDataRows?.map(r => r.id) || [];
+            if (sdIds.length > 0) {
+                const { data: exps } = await supabase
+                    .from('expenses')
+                    .select('*')
+                    .in('shift_data_id', sdIds);
+                expenses = exps || [];
+            }
+        }
+    }
+
+    return { cashReport, expenses };
 }
