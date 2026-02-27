@@ -178,135 +178,6 @@ export async function getGlobalOverview() {
     return matrix;
 }
 
-export async function uploadShiftDataBatch(csvRows: any[]) {
-    // Fetch mapping dependencies
-    const { data: allBranches } = await supabase.from('branches').select('id, name');
-    const branchMap = new Map();
-    allBranches?.forEach(b => {
-        branchMap.set(String(b.id), b.id); // Fixed strict String conversion
-        if (b.name) {
-            branchMap.set(String(b.name).toLowerCase().trim(), b.id);
-        }
-    });
-
-    // 1. Group rows by branch_id intelligently
-    const branchGroups = csvRows.reduce((acc: any, row: any) => {
-        const branchInput = String(row.branch_id || row.branch || row.branch_name || row.Branch || '').trim();
-        if (!branchInput) return acc;
-
-        const validBranchId = branchMap.get(branchInput) || branchMap.get(branchInput.toLowerCase());
-        if (!validBranchId) return acc;
-
-        const rawDate = row.date || row.Date || row.shift_date;
-        const shift_date = rawDate ? new Date(rawDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-        const shift_time = row.time || row.Time || row.shift_time || 'Morning';
-
-        const groupKey = `${validBranchId}_${shift_date}_${shift_time}`;
-
-        if (!acc[groupKey]) acc[groupKey] = { branch_id: validBranchId, shift_date, shift_time, rows: [] };
-        acc[groupKey].rows.push(row);
-        return acc;
-    }, {});
-
-    let totalInserted = 0;
-
-    for (const [groupKey, groupData] of Object.entries(branchGroups)) {
-        const { branch_id, shift_date, shift_time, rows } = groupData as any;
-
-        // Ensure there is an open shift for this branch/date/time
-        let { data: shift } = await supabase
-            .from('shifts')
-            .select('id')
-            .eq('branch_id', branch_id)
-            .eq('shift_date', shift_date)
-            .eq('shift_time', shift_time)
-            .eq('status', 'OPEN')
-            .single();
-
-        if (!shift) {
-            const { data: newShift, error } = await supabase
-                .from('shifts')
-                .insert({
-                    id: crypto.randomUUID(),
-                    branch_id,
-                    shift_date,
-                    shift_time,
-                    status: 'OPEN'
-                })
-                .select()
-                .single();
-            if (error) throw error;
-            shift = newShift;
-        }
-
-        // Handle attendants (Get existing or create)
-        const { data: existingAttendants } = await supabase
-            .from('attendants')
-            .select('id, name')
-            .eq('branch_id', branch_id);
-
-        const attendantMap = new Map();
-        existingAttendants?.forEach(a => attendantMap.set(a.name.toLowerCase().trim(), a.id));
-
-        const insertPayloads = [];
-
-        for (const row of (rows as any[])) {
-            const rowAttendantName = String(row.attendant_name || row.attendant || row.Attendant || row.Name || row.name || '').trim();
-            if (!rowAttendantName) continue;
-
-            let attendant_id = attendantMap.get(rowAttendantName.toLowerCase());
-
-            if (!attendant_id) {
-                // Create new attendant
-                const { data: newAtt, error: attErr } = await supabase
-                    .from('attendants')
-                    .insert({ id: crypto.randomUUID(), branch_id, name: rowAttendantName })
-                    .select()
-                    .single();
-
-                if (attErr) {
-                    throw new Error(`Failed to create highly specific Attendant Record for ${rowAttendantName}: ${attErr.message}`);
-                }
-
-                if (newAtt) {
-                    attendant_id = newAtt.id;
-                    attendantMap.set(rowAttendantName.toLowerCase(), attendant_id);
-                }
-            }
-
-            const expected = parseFloat(row.expected_amount || row.Expected || row.expected || row.expected_sales || 0);
-            const cash = parseFloat(row.cash_remitted || row.Cash || row.cash || row.cash_sales || 0);
-            const pos = parseFloat(row.pos_remitted || row.POS || row.pos || row.pos_sales || 0);
-
-            // Skip invalid rows
-            if (!attendant_id || expected === 0) continue;
-
-            insertPayloads.push({
-                id: crypto.randomUUID(),
-                shift_id: shift!.id,
-                attendant_id: attendant_id,
-                pump_product: row.pump_product || row.Product || row.product || row.Pump || 'General',
-                expected_amount: expected,
-                cash_remitted: cash,
-                pos_remitted: pos,
-                variance: (cash + pos) - expected,
-            });
-        }
-
-        if (insertPayloads.length > 0) {
-            const { error } = await supabase.from('shift_data').insert(insertPayloads);
-            if (error) throw error;
-            totalInserted += insertPayloads.length;
-        }
-    }
-
-    if (totalInserted === 0) {
-        throw new Error('No valid rows inserted. Ensure columns for "Branch", "Attendant", "Expected", and "Cash" exist.');
-    }
-
-    return { success: true, count: totalInserted };
-}
-
 export async function submitManualShiftData(payload: any) {
     const { branch_id, attendant_name, pump_number, product_type, price_per_liter, opening_meter, closing_meter, cash_remitted, pos_remitted, expenses, shift_date, shift_time } = payload;
 
@@ -411,50 +282,6 @@ export async function updateShiftDataRecord(id: string, updates: { expected_amou
     return data;
 }
 
-export async function insertExpensesFromImport(branchId: string, attendantName: string, shiftDate: string, shiftTime: string, expenses: { description: string, amount: number }[]) {
-    if (!expenses || expenses.length === 0) return { count: 0 };
-
-    // Find the shift -> shift_data for this attendant
-    const { data: shift } = await supabase
-        .from('shifts')
-        .select('id')
-        .eq('branch_id', branchId)
-        .eq('shift_date', shiftDate)
-        .eq('shift_time', shiftTime)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-    if (!shift) return { count: 0 };
-
-    const { data: attendant } = await supabase
-        .from('attendants')
-        .select('id')
-        .eq('branch_id', branchId)
-        .ilike('name', attendantName)
-        .single();
-    if (!attendant) return { count: 0 };
-
-    const { data: shiftDataRows } = await supabase
-        .from('shift_data')
-        .select('id')
-        .eq('shift_id', shift.id)
-        .eq('attendant_id', attendant.id)
-        .limit(1);
-    if (!shiftDataRows || shiftDataRows.length === 0) return { count: 0 };
-
-    const shiftDataId = shiftDataRows[0].id;
-    const payloads = expenses.map(e => ({
-        id: crypto.randomUUID(),
-        shift_data_id: shiftDataId,
-        description: e.description,
-        amount: e.amount,
-        status: 'PENDING'
-    }));
-
-    const { error } = await supabase.from('expenses').insert(payloads);
-    if (error) throw error;
-    return { count: payloads.length };
-}
 export async function submitCashAnalysis(payload: {
     branch_id: string;
     attendant_name: string;
@@ -520,18 +347,91 @@ export async function getHistoricalReports(days: number = 30) {
     }));
 }
 
+export async function deleteIndividualShiftRecord(id: string) {
+    // 1. Fetch the data to find matching cash_analysis_reports
+    const { data: shiftData } = await supabase
+        .from('shift_data')
+        .select(`
+            shifts!inner ( branch_id, shift_date, shift_time ),
+            attendants!inner ( name )
+        `)
+        .eq('id', id)
+        .single();
+
+    // 2. Delete associated expenses first to prevent foreign key errors
+    await supabase.from('expenses').delete().eq('shift_data_id', id);
+
+    // 3. Delete the shift data record
+    const { error } = await supabase.from('shift_data').delete().eq('id', id);
+    if (error) throw error;
+
+    // 4. Delete the associated cash analysis report if it exists
+    if (shiftData) {
+        const branchId = (shiftData.shifts as any).branch_id;
+        const shiftDate = (shiftData.shifts as any).shift_date;
+        const shiftTime = (shiftData.shifts as any).shift_time;
+        const attendantName = (shiftData.attendants as any).name;
+
+        await supabase.from('cash_analysis_reports').delete()
+            .eq('branch_id', branchId)
+            .eq('shift_date', shiftDate)
+            .eq('shift_time', shiftTime)
+            .ilike('attendant_name', attendantName);
+    }
+
+    return { success: true };
+}
+
+export async function deleteMultipleShiftRecords(ids: string[]) {
+    if (!ids || ids.length === 0) return { success: true };
+
+    // 1. Fetch data for all records to be deleted
+    const { data: shiftDatas } = await supabase
+        .from('shift_data')
+        .select(`
+            shifts!inner ( branch_id, shift_date, shift_time ),
+            attendants!inner ( name )
+        `)
+        .in('id', ids);
+
+    // 2. Delete associated expenses
+    await supabase.from('expenses').delete().in('shift_data_id', ids);
+
+    // 3. Delete the shift data records
+    const { error } = await supabase.from('shift_data').delete().in('id', ids);
+    if (error) throw error;
+
+    // 4. Delete associated cash analysis reports
+    if (shiftDatas && shiftDatas.length > 0) {
+        for (const sd of shiftDatas) {
+            const branchId = (sd.shifts as any).branch_id;
+            const shiftDate = (sd.shifts as any).shift_date;
+            const shiftTime = (sd.shifts as any).shift_time;
+            const attendantName = (sd.attendants as any).name;
+
+            await supabase.from('cash_analysis_reports').delete()
+                .eq('branch_id', branchId)
+                .eq('shift_date', shiftDate)
+                .eq('shift_time', shiftTime)
+                .ilike('attendant_name', attendantName);
+        }
+    }
+
+    return { success: true };
+}
+
 export async function deleteOpenShiftByBranch(branchId: string) {
     // 1. Fetch the OPEN shift for the branch
     const { data: shift, error: fetchErr } = await supabase
         .from('shifts')
-        .select('id')
+        .select('id, shift_date, shift_time')
         .eq('branch_id', branchId)
         .eq('status', 'OPEN')
         .single();
 
     if (fetchErr || !shift) return { success: false, message: 'No open shift found to delete.' };
 
-    // cascade deletion: shift_data and expenses (assume if cascade is strict we just need to delete shift_data)
+    // cascade deletion: shift_data and expenses
     // To be safe, we explicitly find them
     const { data: shiftDataItems } = await supabase
         .from('shift_data')
@@ -546,6 +446,12 @@ export async function deleteOpenShiftByBranch(branchId: string) {
         // Purge shift data
         await supabase.from('shift_data').delete().in('id', shiftDataIds);
     }
+
+    // Purge associated cash analysis reports for this exact shift segment
+    await supabase.from('cash_analysis_reports').delete()
+        .eq('branch_id', branchId)
+        .eq('shift_date', shift.shift_date)
+        .eq('shift_time', shift.shift_time);
 
     // Finally, delete the shift itself
     const { error: deleteShiftErr } = await supabase.from('shifts').delete().eq('id', shift.id);

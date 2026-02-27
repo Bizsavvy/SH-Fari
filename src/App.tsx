@@ -388,6 +388,10 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedAttendant, setSelectedAttendant] = useState<string | null>(null);
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
+  const [deletingRowId, setDeletingRowId] = useState<string | null>(null);
 
   // Filter state
   const [datePreset, setDatePreset] = useState<'today' | 'this_week' | 'last_week' | 'this_month' | 'custom' | 'all'>('all');
@@ -492,6 +496,27 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
     onError: (err: any) => notifyToast(`Update failed: ${err.message}`)
   });
 
+  const deleteIndividualMutation = useMutation({
+    mutationFn: (id: string) => api.deleteIndividualShiftRecord(id),
+    onSuccess: () => {
+      notifyToast("Record deleted successfully.");
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+      setDeletingRowId(null);
+    },
+    onError: (err: any) => notifyToast(`Delete failed: ${err.message}`)
+  });
+
+  const deleteBulkMutation = useMutation({
+    mutationFn: (ids: string[]) => api.deleteMultipleShiftRecords(ids),
+    onSuccess: (_, variables) => {
+      notifyToast(`Deleted ${variables.length} records successfully.`);
+      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
+      setSelectedRows(new Set());
+      setIsDeletingBulk(false);
+    },
+    onError: (err: any) => notifyToast(`Bulk delete failed: ${err.message}`)
+  });
+
   const handleAction = (id: string, type: 'approve' | 'reject') => setConfirmAction({ id, type });
 
   const executeAction = () => {
@@ -511,7 +536,43 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
     updateShiftMutation.mutate({ id, expected: editForm.expected, cash: editForm.cash, pos: editForm.pos, date: editForm.date });
   };
 
+  const toggleRowSelect = (id: string) => {
+    setSelectedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) newSet.delete(id);
+      else newSet.add(id);
+      return newSet;
+    });
+  };
+
+  const toggleAllRows = () => {
+    if (selectedRows.size === filteredItems.length && filteredItems.length > 0) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(filteredItems.map((item: any) => item.id)));
+    }
+  };
+
   const columns = useMemo<ColumnDef<any>[]>(() => [
+    {
+      id: 'select',
+      header: () => (
+        <input
+          type="checkbox"
+          className="rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 focus:ring-offset-0 cursor-pointer"
+          checked={selectedRows.size === filteredItems.length && filteredItems.length > 0}
+          onChange={toggleAllRows}
+        />
+      ),
+      cell: ({ row }) => (
+        <input
+          type="checkbox"
+          className="rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 focus:ring-offset-0 cursor-pointer"
+          checked={selectedRows.has(row.original.id)}
+          onChange={() => toggleRowSelect(row.original.id)}
+        />
+      ),
+    },
     {
       accessorKey: 'attendant_name',
       header: 'Attendant',
@@ -620,7 +681,7 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
           </div>
         );
         return (
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-end gap-3">
             <button
               onClick={() => startEditing(row)}
               className="p-1 text-zinc-300 hover:text-zinc-900 transition-colors"
@@ -628,11 +689,39 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
             >
               <FileEdit size={14} />
             </button>
+
+            {deletingRowId === row.id ? (
+              <div className="flex items-center gap-1 bg-red-50/50 border border-red-100 px-2 py-0.5 rounded-sm h-6">
+                <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest px-1 hidden md:inline">Del?</span>
+                <button
+                  onClick={() => deleteIndividualMutation.mutate(row.id)}
+                  disabled={deleteIndividualMutation.isPending}
+                  className="text-[9px] font-bold bg-red-600 text-white px-2 h-full hover:bg-red-700 transition-colors disabled:opacity-50"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setDeletingRowId(null)}
+                  disabled={deleteIndividualMutation.isPending}
+                  className="text-zinc-500 hover:text-zinc-900 transition-colors h-full px-1"
+                >
+                  <X size={12} strokeWidth={3} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setDeletingRowId(row.id)}
+                className="p-1 text-zinc-300 hover:text-red-600 transition-colors"
+                title="Delete Record"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         );
       }
     }
-  ], [editingRowId, editForm, isSaving]);
+  ], [editingRowId, editForm, isSaving, selectedRows, filteredItems, deletingRowId]);
 
   const table = useReactTable({
     data: filteredItems,
@@ -694,13 +783,56 @@ const ActiveShiftLedger = ({ branchData, navigateBack }: { branchData: any, navi
                 </div>
               </div>
             ) : (
-              <button
-                onClick={() => setIsDeleting(true)}
-                className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-red-600 transition-colors group"
-                title="Clear Station Ledger"
-              >
-                <Trash2 size={14} className="group-hover:scale-110 transition-transform" /> Clear Station
-              </button>
+              <div className="flex items-center gap-4">
+                <AnimatePresence>
+                  {selectedRows.size > 0 && (
+                    isDeletingBulk ? (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="flex items-center gap-3 bg-red-50/50 border border-red-100 px-3 py-1.5 rounded-sm"
+                      >
+                        <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest hidden md:inline">Delete {selectedRows.size} Selected?</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => deleteBulkMutation.mutate(Array.from(selectedRows))}
+                            disabled={deleteBulkMutation.isPending}
+                            className="text-[10px] font-bold bg-red-600 text-white px-3 py-1 hover:bg-red-700 transition-colors shadow-sm disabled:opacity-50"
+                          >
+                            {deleteBulkMutation.isPending ? 'Deleting...' : 'Yes, Delete'}
+                          </button>
+                          <button
+                            onClick={() => setIsDeletingBulk(false)}
+                            disabled={deleteBulkMutation.isPending}
+                            className="text-[10px] font-bold text-zinc-500 hover:text-zinc-900 px-3 py-1 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <motion.button
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        onClick={() => setIsDeletingBulk(true)}
+                        className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-red-600 transition-colors group"
+                        title={`Delete ${selectedRows.size} Selected`}
+                      >
+                        <Trash2 size={14} className="group-hover:scale-110 transition-transform" /> Delete {selectedRows.size} Selected
+                      </motion.button>
+                    )
+                  )}
+                </AnimatePresence>
+                <button
+                  onClick={() => setIsDeleting(true)}
+                  className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-red-600 transition-colors group"
+                  title="Clear Station Ledger"
+                >
+                  <Trash2 size={14} className="group-hover:scale-110 transition-transform" /> Clear Station
+                </button>
+              </div>
             )}
           </div>
 
@@ -993,357 +1125,6 @@ const ExpenseAudit = () => {
 };
 
 
-const CsvImporter = () => {
-  const queryClient = useQueryClient();
-  const [file, setFile] = useState<File | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [preview, setPreview] = useState<any[]>([]);
-  const [parsedData, setParsedData] = useState<any[] | null>(null);
-  const [selectedBranchId, setSelectedBranchId] = useState<string>('');
-
-  const { data: branches } = useQuery({
-    queryKey: ['branches'],
-    queryFn: api.getBranches
-  });
-
-  const uploadMutation = useMutation({
-    mutationFn: api.uploadShiftDataBatch,
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ['global_overview'] });
-      notifyToast(`Imported ${data.count} shift records successfully`);
-      setFile(null);
-      setPreview([]);
-      setParsedData(null);
-    },
-    onError: (err: any) => {
-      notifyToast(`Upload failed: ${err.message}`);
-    }
-  });
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedBranchId) {
-      notifyToast('Please select a Target Branch before uploading.');
-      return;
-    }
-    const selected = e.target.files?.[0];
-    if (!selected) return;
-    setFile(selected);
-
-    const fileExt = selected.name.split('.').pop()?.toLowerCase();
-
-    if (fileExt === 'csv') {
-      Papa.parse(selected, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results: any) => {
-          const mapped = results.data.map((r: any) => ({ ...r, branch_id: selectedBranchId }));
-          setParsedData(mapped);
-          setPreview(mapped.slice(0, 5));
-        }
-      });
-    } else if (fileExt === 'xlsx' || fileExt === 'xls') {
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-
-        // ============================================================
-        // SHEET 1: METRE — meter readings & sales data
-        // ============================================================
-        const metreSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('METRE') || n.toUpperCase().includes('METER')) || wb.SheetNames[0];
-        const metreSheet = wb.Sheets[metreSheetName];
-        const metreRows = XLSX.utils.sheet_to_json(metreSheet, { header: 1 }) as any[][];
-        const extractedData: any[] = [];
-        let currentProduct = 'PMS';
-
-        // Parse date + shift time from row 1 (e.g. "16/02/2026 MORNING SHIFT")
-        let parsedShiftDate = '';
-        let parsedShiftTime = 'Morning';
-        if (metreRows[0]) {
-          const headerText = metreRows[0].map((c: any) => String(c || '')).join(' ').toUpperCase();
-          if (headerText.includes('EVENING')) parsedShiftTime = 'Evening';
-          const dateMatch = headerText.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-          if (dateMatch) {
-            parsedShiftDate = `${dateMatch[3]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[1].padStart(2, '0')}`;
-          }
-        }
-
-        let amountIdx = 8;
-        let receiptIdx = 9;
-
-        for (let r = 0; r < Math.min(metreRows.length, 30); r++) {
-          if (!metreRows[r]) continue;
-          const firstCol = String(metreRows[r][0] || '').toUpperCase().trim();
-          if (firstCol === 'NAME') {
-            const foundAmount = metreRows[r].findIndex((c: any) => String(c).toUpperCase().includes('AMOUNT'));
-            const foundReceipt = metreRows[r].findIndex((c: any) => String(c).toUpperCase().includes('RECEIPT'));
-            if (foundAmount !== -1) amountIdx = foundAmount;
-            if (foundReceipt !== -1) receiptIdx = foundReceipt;
-            break;
-          }
-        }
-
-        for (let r = 0; r < metreRows.length; r++) {
-          const row = metreRows[r];
-          if (!row || row.length === 0) continue;
-          const col0 = String(row[0] || '').trim();
-          const col1 = String(row[1] || '').trim();
-
-          if (col0.toUpperCase().includes('AGO') || col1.toUpperCase().includes('AGO')) { currentProduct = 'AGO'; continue; }
-          if (col0.toUpperCase().includes('PMS') || col1.toUpperCase().includes('PMS')) { currentProduct = 'PMS'; continue; }
-          if (!col0 || col0 === 'NAME' || col0 === 'TOTAL' || col0 === 'SUMMARY' || col0 === 'TANKS' || col0 === 'PMS' || col0.includes('AGO') || col0.includes('SHIFT') || col1 === '1ST DIPPING') continue;
-
-          const amount = parseFloat(String(row[amountIdx] || '').replace(/,/g, ''));
-          const receipt = parseFloat(String(row[receiptIdx] || '').replace(/,/g, ''));
-
-          if (!isNaN(amount) && amount > 0) {
-            extractedData.push({
-              branch_id: selectedBranchId,
-              attendant_name: col0,
-              pump_product: `${currentProduct} - Pump ${col1 || '1'}`,
-              expected_amount: amount,
-              cash_remitted: !isNaN(receipt) ? receipt : 0,
-              pos_remitted: 0,
-              shift_date: parsedShiftDate,
-              shift_time: parsedShiftTime
-            });
-          }
-        }
-
-        // ============================================================
-        // SHEET 2: CASH ANALYSIS — denomination counts per attendant
-        // Horizontal layout: each attendant = 3-column group
-        // Row 0: shift time (MORNING / EVENING)
-        // Row 1: Name | Pump # | Date
-        // Rows 2-9: Denomination value | Count | Subtotal
-        // Then: CASH total, Expense rows, POS row, TOTAL row
-        // ============================================================
-        const cashSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('CASH'));
-        const cashAnalysisEntries: any[] = [];
-
-        if (cashSheetName) {
-          const cashSheet = wb.Sheets[cashSheetName];
-          const cashRows = XLSX.utils.sheet_to_json(cashSheet, { header: 1 }) as any[][];
-
-          if (cashRows.length >= 2) {
-            const headerRow = cashRows[1] || [];
-            const attendantBlocks: { col: number; name: string; pump: string; date: string; shiftTime: string }[] = [];
-
-            for (let c = 0; c < headerRow.length; c++) {
-              const cellVal = String(headerRow[c] || '').trim();
-              if (cellVal && isNaN(Number(cellVal)) && !cellVal.toUpperCase().includes('PUMP') && !cellVal.match(/^\d{1,2}[\/\-]/)) {
-                const pumpStr = String(headerRow[c + 1] || '').trim();
-                const dateStr = String(headerRow[c + 2] || '').trim();
-                const timeStr = String((cashRows[0] || [])[c] || '').trim().toUpperCase();
-                const pumpNum = pumpStr.replace(/[^0-9]/g, '') || '1';
-                let blockDate = parsedShiftDate;
-                const dMatch = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-                if (dMatch) blockDate = `${dMatch[3]}-${dMatch[2].padStart(2, '0')}-${dMatch[1].padStart(2, '0')}`;
-                attendantBlocks.push({ col: c, name: cellVal, pump: pumpNum, date: blockDate, shiftTime: timeStr.includes('EVENING') ? 'Evening' : 'Morning' });
-              }
-            }
-
-            const DENOMS = [1000, 500, 200, 100, 50, 20, 10, 5];
-
-            for (const block of attendantBlocks) {
-              const denomCounts: Record<number, number> = {};
-              let totalCash = 0;
-              const blockExpenses: { description: string; amount: number }[] = [];
-              let posAmount = 0;
-
-              for (let d = 0; d < DENOMS.length; d++) {
-                const rowIdx = 2 + d;
-                if (rowIdx >= cashRows.length) break;
-                const countCell = cashRows[rowIdx]?.[block.col + 1];
-                denomCounts[DENOMS[d]] = parseInt(String(countCell || '0').replace(/,/g, ''), 10) || 0;
-              }
-
-              for (let r = 2 + DENOMS.length; r < cashRows.length; r++) {
-                const rawC0 = cashRows[r]?.[block.col];
-                const rawC1 = cashRows[r]?.[block.col + 1];
-                const rawC2 = cashRows[r]?.[block.col + 2];
-                const c0 = String(rawC0 || '').trim().toUpperCase();
-                const c1 = String(rawC1 || '').trim();
-                const c1Up = c1.toUpperCase();
-                const c2 = String(rawC2 || '').trim().toUpperCase();
-                // Parse numbers — handle negatives from red-formatted Excel cells
-                const c0Num = parseFloat(String(rawC0 || '0').replace(/[^0-9.-]/g, '')) || 0;
-                const c1Num = parseFloat(String(rawC1 || '0').replace(/[^0-9.-]/g, '')) || 0;
-
-                if (c0 === 'CASH' || c0.includes('CASH')) {
-                  totalCash = c1Num || parseFloat(String(rawC2 || '0').replace(/[^0-9.-]/g, '')) || 0;
-                } else if (c1Up.includes('POS') || c0.includes('POS') || c2.includes('POS')) {
-                  // POS row: amount is in col0, label "POS" in col1 or col2
-                  posAmount = Math.abs(c0Num) || Math.abs(c1Num) || 0;
-                } else if (c0 === 'TOTAL' || c1Up === 'TOTAL' || c2.includes('TOTAL')) {
-                  break;
-                } else if (Math.abs(c0Num) > 0 && c1 && !c1.match(/^[\d,.]+$/) && c1Up !== 'CASH') {
-                  // Expense row: amount in col0 (may be negative/red), description in col1
-                  blockExpenses.push({ description: c1, amount: Math.abs(c0Num) });
-                }
-              }
-
-              // Enrich the matching metre entry with POS
-              const matchEntry = extractedData.find(e => e.attendant_name.toUpperCase() === block.name.toUpperCase());
-              if (matchEntry) matchEntry.pos_remitted = posAmount;
-
-              cashAnalysisEntries.push({
-                branch_id: selectedBranchId,
-                attendant_name: block.name,
-                pump_number: parseInt(block.pump, 10) || 1,
-                product_type: currentProduct,
-                denominations: denomCounts,
-                total_cash: totalCash || Object.entries(denomCounts).reduce((s, [d, c]) => s + Number(d) * c, 0),
-                shift_date: block.date,
-                shift_time: block.shiftTime,
-                expenses: blockExpenses
-              });
-            }
-          }
-        }
-
-        // Attach cash analysis entries for grouped upload
-        (extractedData as any).__cashAnalysis = cashAnalysisEntries;
-
-        setParsedData(extractedData);
-        setPreview(extractedData.slice(0, 5));
-      };
-      reader.readAsBinaryString(selected);
-    } else {
-      notifyToast('Unsupported format. Please select CSV or Excel.');
-      setFile(null);
-    }
-  };
-
-  const executeImport = async () => {
-    if (!parsedData || parsedData.length === 0) return;
-    setIsProcessing(true);
-    try {
-      await uploadMutation.mutateAsync(parsedData);
-
-      // Submit Cash Analysis entries from Sheet 2 if present
-      const cashEntries = (parsedData as any).__cashAnalysis as any[] | undefined;
-      if (cashEntries && cashEntries.length > 0) {
-        let cashCount = 0;
-        let expenseCount = 0;
-        for (const entry of cashEntries) {
-          try {
-            await api.submitCashAnalysis({
-              branch_id: entry.branch_id,
-              attendant_name: entry.attendant_name,
-              pump_number: entry.pump_number,
-              product_type: entry.product_type,
-              denominations: entry.denominations,
-              total_cash: entry.total_cash,
-              shift_date: entry.shift_date,
-              shift_time: entry.shift_time
-            });
-            cashCount++;
-
-            // Insert expenses from this attendant's block
-            if (entry.expenses && entry.expenses.length > 0) {
-              try {
-                const result = await api.insertExpensesFromImport(
-                  entry.branch_id, entry.attendant_name, entry.shift_date, entry.shift_time, entry.expenses
-                );
-                expenseCount += result.count;
-              } catch (e) {
-                console.error('Expense insert failed for', entry.attendant_name, e);
-              }
-            }
-          } catch (e) {
-            console.error('Cash analysis entry failed:', entry.attendant_name, e);
-          }
-        }
-        const parts = [];
-        if (cashCount > 0) parts.push(`${cashCount} cash analysis`);
-        if (expenseCount > 0) parts.push(`${expenseCount} expenses`);
-        if (parts.length > 0) notifyToast(`Sheet 2: imported ${parts.join(' + ')}.`);
-      }
-    } catch (e) {
-      // uploadMutation handles its own error toast
-    }
-    setIsProcessing(false);
-  };
-
-  return (
-    <div className="border border-zinc-200 bg-white p-8">
-      <div className="mb-6">
-        <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Target Branch</label>
-        <select
-          value={selectedBranchId}
-          onChange={(e) => setSelectedBranchId(e.target.value)}
-          className="w-full text-sm font-medium border border-zinc-200 outline-none focus:border-zinc-500 bg-[#FAFAFA] p-3 transition-colors text-zinc-900"
-        >
-          <option value="">-- Select a Target Branch to assign this Sheet to --</option>
-          {branches?.map((b: any) => (
-            <option key={b.id} value={b.id}>{b.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className={`flex flex-col items-center justify-center p-12 border-2 border-dashed border-zinc-200 hover:border-zinc-400 transition-colors ${selectedBranchId ? 'bg-[#FAFAFA]' : 'bg-zinc-50 opacity-50'} relative overflow-hidden group`}>
-        <input
-          type="file"
-          accept=".csv, .xlsx, .xls"
-          onChange={handleFileUpload}
-          disabled={!selectedBranchId}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
-        />
-        <UploadIcon size={32} className="text-zinc-300 group-hover:text-zinc-900 transition-colors mb-4" />
-        <p className="font-bold text-sm text-zinc-900">{file ? file.name : 'Drag & Drop your Fari Shift Report (Excel)'}</p>
-        <p className="text-xs text-zinc-500 mt-1">{file ? 'Ready for import preview' : 'We will automatically extract multiple shifts, products and attendants'}</p>
-      </div>
-
-      {preview.length > 0 && (
-        <div className="mt-8">
-          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-900 mb-4">Extracted Data Preview</h4>
-          <div className="border border-zinc-200 overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr>
-                  {Object.keys(preview[0]).filter(key => key !== 'branch_id').map((key) => (
-                    <th key={key} className="py-2 px-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest border-b border-zinc-200 bg-[#FAFAFA]">
-                      {key}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100">
-                {preview.map((row: any, i: number) => (
-                  <tr key={i}>
-                    {Object.keys(row).filter(key => key !== 'branch_id').map((key: string, j: number) => (
-                      <td key={j} className="py-2 px-4 text-xs text-zinc-600 truncate max-w-[150px]">
-                        {row[key] as React.ReactNode}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-6 flex justify-end gap-4">
-            <button
-              onClick={() => { setFile(null); setPreview([]); setParsedData(null); }}
-              className="px-4 py-2 text-xs font-bold text-zinc-500 hover:text-zinc-900 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={executeImport}
-              disabled={isProcessing}
-              className="px-6 py-2 bg-zinc-900 text-white text-xs font-bold hover:bg-zinc-800 transition-colors flex items-center gap-2"
-            >
-              {isProcessing && <Loader2 size={14} className="animate-spin" />}
-              {isProcessing ? 'Injecting Data...' : 'Confirm Bulk Import'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 // --- Main Application ---
 
 const Dashboard = () => {
@@ -1510,54 +1291,7 @@ const Dashboard = () => {
                       <p className="text-zinc-500 text-sm">Variance records and finalized audits across all branches.</p>
                     </div>
                     <div className="flex items-center gap-4">
-                      <div className="flex border border-zinc-200 rounded">
-                        {[30, 60, 90].map((range) => (
-                          <button
-                            key={range}
-                            onClick={() => setHistoryRange(range)}
-                            className={cn(
-                              "px-4 py-2 text-xs font-bold transition-colors",
-                              historyRange === range ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-zinc-900"
-                            )}
-                          >
-                            {range}D
-                          </button>
-                        ))}
-                      </div>
                       <button onClick={exportCsv} className="text-xs font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors">Export CSV</button>
-                    </div>
-                  </div>
-
-                  {/* Stripped down Charts */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-12">
-                    <div>
-                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">{historyRange}-DAY VARIANCE TREND</h4>
-                      <div className="h-[200px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={trendData}>
-                            <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="#FAFAFA" />
-                            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                            <Tooltip cursor={{ stroke: '#F4F4F5' }} contentStyle={{ borderRadius: '0', border: '1px solid #E4E4E7', boxShadow: 'none' }} formatter={(value: number) => [formatNaira(value), 'Variance']} />
-                            <Line type="monotone" dataKey="variance" stroke="#18181A" strokeWidth={2} dot={{ r: 3, fill: '#18181A', strokeWidth: 0 }} activeDot={{ r: 4 }} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-sm text-zinc-900 mb-6 uppercase tracking-widest">POS Claimed vs Actual</h4>
-                      <div className="h-[200px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={trendData || []}>
-                            <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="#FAFAFA" />
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#A1A1AA' }} />
-                            <Tooltip cursor={{ fill: '#FAFAFA' }} contentStyle={{ borderRadius: '0', border: '1px solid #E4E4E7', boxShadow: 'none' }} />
-                            <Bar dataKey="claimed" fill="#E4E4E7" radius={0} />
-                            <Bar dataKey="actual" fill="#18181A" radius={0} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
                     </div>
                   </div>
 
@@ -1637,11 +1371,6 @@ const Dashboard = () => {
                   </div>
 
                   <div className="max-w-4xl space-y-12">
-                    <section>
-                      <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-widest mb-4 border-b border-zinc-200 pb-2">Mass Data Injection</h4>
-                      <CsvImporter />
-                    </section>
-
                     <section>
                       <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-widest mb-4 border-b border-zinc-200 pb-2">Variance Thresholds</h4>
                       <div className="space-y-4">
