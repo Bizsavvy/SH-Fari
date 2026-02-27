@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient
 import React, { useState, useMemo, useEffect } from 'react';
 import * as api from './lib/api';
 import ManualDataEntry from './components/ManualDataEntry';
-import CashAnalysis from './components/CashAnalysis';
+
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import {
@@ -271,29 +271,47 @@ const BranchOverviewMatrix = ({ matrix, setActiveBranch }: { matrix: any[], setA
             <div className="py-24 flex justify-center text-zinc-400"><Loader2 className="animate-spin" size={24} /></div>
           ) : (
             <>
+              {/* Cash Analysis Denominations */}
               <section>
                 <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">Cash Analysis Locker</h4>
-                {data?.cashReport ? (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {Object.entries(data.cashReport.denominations).sort(([a], [b]) => Number(b) - Number(a)).map(([denom, count]: any) => {
-                      if (count === 0) return null;
-                      return (
-                        <div key={denom} className="bg-zinc-50 p-4 border border-zinc-100 flex flex-col justify-center items-center shadow-sm">
-                          <span className="text-sm font-black text-zinc-900">₦{denom}</span>
-                          <span className="text-xs text-zinc-500 font-mono font-medium">x {count}</span>
-                        </div>
-                      );
-                    })}
-                    <div className="col-span-full mt-4 flex justify-between items-end border-t border-zinc-200 pt-6">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Physical Vault Total:</span>
-                      <span className="text-2xl font-mono text-zinc-900 font-black tracking-tight">{formatNaira(data.cashReport.total_cash)}</span>
+                {data?.cashReport ? (() => {
+                  const vaultTotal = Object.entries(data.cashReport.denominations).reduce((sum: number, [denom, count]: any) => sum + (Number(denom) * Number(count)), 0);
+                  return (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {Object.entries(data.cashReport.denominations).sort(([a], [b]) => Number(b) - Number(a)).map(([denom, count]: any) => {
+                        if (count === 0) return null;
+                        return (
+                          <div key={denom} className="bg-zinc-50 p-4 border border-zinc-100 flex flex-col justify-center items-center shadow-sm">
+                            <span className="text-sm font-black text-zinc-900">₦{denom}</span>
+                            <span className="text-xs text-zinc-500 font-mono font-medium">x {count}</span>
+                          </div>
+                        );
+                      })}
+                      <div className="col-span-full mt-4 flex justify-between items-end border-t border-zinc-200 pt-6">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Physical Vault Total:</span>
+                        <span className="text-2xl font-mono text-zinc-900 font-black tracking-tight">{formatNaira(vaultTotal)}</span>
+                      </div>
                     </div>
-                  </div>
-                ) : (
+                  );
+                })() : (
                   <p className="text-sm text-zinc-500 font-medium">No physical breakdown logged for this attendant.</p>
                 )}
               </section>
 
+              {/* POS Claimed */}
+              <section>
+                <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">POS Claimed</h4>
+                {(data?.posTotal ?? 0) > 0 ? (
+                  <div className="flex justify-between items-center p-4 bg-blue-50 border border-blue-100">
+                    <span className="text-sm font-bold text-blue-900">Total POS Amount</span>
+                    <span className="font-mono text-xl text-blue-900 font-black tracking-tight">{formatNaira(data?.posTotal || 0)}</span>
+                  </div>
+                ) : (
+                  <p className="text-sm text-zinc-500 font-medium">No POS transactions recorded for this shift.</p>
+                )}
+              </section>
+
+              {/* Expenses */}
               <section>
                 <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">Recorded Expense Matrix</h4>
                 {data?.expenses && data.expenses.length > 0 ? (
@@ -307,10 +325,48 @@ const BranchOverviewMatrix = ({ matrix, setActiveBranch }: { matrix: any[], setA
                         <span className="font-mono text-zinc-900 font-bold tracking-tight">{formatNaira(e.amount)}</span>
                       </div>
                     ))}
+                    <div className="flex justify-between items-center pt-3 border-t border-zinc-200 mt-1">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Total Expenses</span>
+                      <span className="font-mono text-sm font-bold text-zinc-900">{formatNaira(data.expenses.reduce((s: number, e: any) => s + (e.amount || 0), 0))}</span>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-zinc-500 font-medium">Zero expenses were deducted during this shift segment.</p>
                 )}
+              </section>
+
+              {/* Grand Total Summary */}
+              <section>
+                <h4 className="text-xs font-black uppercase tracking-widest text-zinc-900 border-b border-zinc-200 pb-2 mb-4">Total Remittance Summary</h4>
+                {(() => {
+                  const vaultTotal = data?.cashReport
+                    ? Object.entries(data.cashReport.denominations).reduce((sum: number, [d, c]: any) => sum + (Number(d) * Number(c)), 0)
+                    : (data?.cashTotal || 0);
+                  const posVal = data?.posTotal || 0;
+                  const expVal = data?.expenses?.reduce((s: number, e: any) => s + (e.amount || 0), 0) || 0;
+                  const grandTotal = vaultTotal + posVal + expVal;
+
+                  return (
+                    <div className="bg-zinc-900 text-white rounded-lg p-5 space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Physical Cash</span>
+                        <span className="font-mono text-sm font-bold text-zinc-200">{formatNaira(vaultTotal)}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">POS</span>
+                        <span className="font-mono text-sm font-bold text-zinc-200">{formatNaira(posVal)}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Expenses</span>
+                        <span className="font-mono text-sm font-bold text-zinc-200">{formatNaira(expVal)}</span>
+                      </div>
+                      <div className="border-t border-zinc-700 pt-3 mt-2 flex justify-between items-end">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Grand Total</span>
+                        <span className="font-mono text-2xl font-black tracking-tight text-emerald-400">{formatNaira(grandTotal)}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </section>
             </>
           )}
@@ -990,67 +1046,164 @@ const CsvImporter = () => {
       reader.onload = (evt) => {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
 
-        // Custom Parser for Complex Template
-        const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+        // ============================================================
+        // SHEET 1: METRE — meter readings & sales data
+        // ============================================================
+        const metreSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('METRE') || n.toUpperCase().includes('METER')) || wb.SheetNames[0];
+        const metreSheet = wb.Sheets[metreSheetName];
+        const metreRows = XLSX.utils.sheet_to_json(metreSheet, { header: 1 }) as any[][];
         const extractedData: any[] = [];
         let currentProduct = 'PMS';
+
+        // Parse date + shift time from row 1 (e.g. "16/02/2026 MORNING SHIFT")
+        let parsedShiftDate = '';
+        let parsedShiftTime = 'Morning';
+        if (metreRows[0]) {
+          const headerText = metreRows[0].map((c: any) => String(c || '')).join(' ').toUpperCase();
+          if (headerText.includes('EVENING')) parsedShiftTime = 'Evening';
+          const dateMatch = headerText.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+          if (dateMatch) {
+            parsedShiftDate = `${dateMatch[3]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[1].padStart(2, '0')}`;
+          }
+        }
 
         let amountIdx = 8;
         let receiptIdx = 9;
 
-        // Find header indices dynamically
-        for (let r = 0; r < Math.min(rows.length, 30); r++) {
-          if (!rows[r]) continue;
-          const firstCol = String(rows[r][0] || '').toUpperCase().trim();
+        for (let r = 0; r < Math.min(metreRows.length, 30); r++) {
+          if (!metreRows[r]) continue;
+          const firstCol = String(metreRows[r][0] || '').toUpperCase().trim();
           if (firstCol === 'NAME') {
-            const foundAmount = rows[r].findIndex((c: any) => String(c).toUpperCase().includes('AMOUNT'));
-            const foundReceipt = rows[r].findIndex((c: any) => String(c).toUpperCase().includes('RECEIPT'));
+            const foundAmount = metreRows[r].findIndex((c: any) => String(c).toUpperCase().includes('AMOUNT'));
+            const foundReceipt = metreRows[r].findIndex((c: any) => String(c).toUpperCase().includes('RECEIPT'));
             if (foundAmount !== -1) amountIdx = foundAmount;
             if (foundReceipt !== -1) receiptIdx = foundReceipt;
             break;
           }
         }
 
-        for (let r = 0; r < rows.length; r++) {
-          const row = rows[r];
+        for (let r = 0; r < metreRows.length; r++) {
+          const row = metreRows[r];
           if (!row || row.length === 0) continue;
-
           const col0 = String(row[0] || '').trim();
           const col1 = String(row[1] || '').trim();
 
-          if (col0.toUpperCase().includes('AGO') || col1.toUpperCase().includes('AGO')) {
-            currentProduct = 'AGO';
-            continue;
-          }
-          if (col0.toUpperCase().includes('PMS') || col1.toUpperCase().includes('PMS')) {
-            currentProduct = 'PMS';
-            continue;
-          }
+          if (col0.toUpperCase().includes('AGO') || col1.toUpperCase().includes('AGO')) { currentProduct = 'AGO'; continue; }
+          if (col0.toUpperCase().includes('PMS') || col1.toUpperCase().includes('PMS')) { currentProduct = 'PMS'; continue; }
+          if (!col0 || col0 === 'NAME' || col0 === 'TOTAL' || col0 === 'SUMMARY' || col0 === 'TANKS' || col0 === 'PMS' || col0.includes('AGO') || col0.includes('SHIFT') || col1 === '1ST DIPPING') continue;
 
-          // Skip header rows and sumaries
-          if (!col0 || col0 === 'NAME' || col0 === 'TOTAL' || col0 === 'SUMMARY' || col0 === 'TANKS' || col0 === 'PMS' || col0.includes('AGO') || col0.includes('SHIFT') || col1 === '1ST DIPPING') {
-            continue;
-          }
-
-          const amountStr = String(row[amountIdx] || '').replace(/,/g, '');
-          const receiptStr = String(row[receiptIdx] || '').replace(/,/g, '');
-          const amount = parseFloat(amountStr);
-          const receipt = parseFloat(receiptStr);
+          const amount = parseFloat(String(row[amountIdx] || '').replace(/,/g, ''));
+          const receipt = parseFloat(String(row[receiptIdx] || '').replace(/,/g, ''));
 
           if (!isNaN(amount) && amount > 0) {
             extractedData.push({
               branch_id: selectedBranchId,
               attendant_name: col0,
-              pump_product: currentProduct,
+              pump_product: `${currentProduct} - Pump ${col1 || '1'}`,
               expected_amount: amount,
               cash_remitted: !isNaN(receipt) ? receipt : 0,
-              pos_remitted: 0
+              pos_remitted: 0,
+              shift_date: parsedShiftDate,
+              shift_time: parsedShiftTime
             });
           }
         }
+
+        // ============================================================
+        // SHEET 2: CASH ANALYSIS — denomination counts per attendant
+        // Horizontal layout: each attendant = 3-column group
+        // Row 0: shift time (MORNING / EVENING)
+        // Row 1: Name | Pump # | Date
+        // Rows 2-9: Denomination value | Count | Subtotal
+        // Then: CASH total, Expense rows, POS row, TOTAL row
+        // ============================================================
+        const cashSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('CASH'));
+        const cashAnalysisEntries: any[] = [];
+
+        if (cashSheetName) {
+          const cashSheet = wb.Sheets[cashSheetName];
+          const cashRows = XLSX.utils.sheet_to_json(cashSheet, { header: 1 }) as any[][];
+
+          if (cashRows.length >= 2) {
+            const headerRow = cashRows[1] || [];
+            const attendantBlocks: { col: number; name: string; pump: string; date: string; shiftTime: string }[] = [];
+
+            for (let c = 0; c < headerRow.length; c++) {
+              const cellVal = String(headerRow[c] || '').trim();
+              if (cellVal && isNaN(Number(cellVal)) && !cellVal.toUpperCase().includes('PUMP') && !cellVal.match(/^\d{1,2}[\/\-]/)) {
+                const pumpStr = String(headerRow[c + 1] || '').trim();
+                const dateStr = String(headerRow[c + 2] || '').trim();
+                const timeStr = String((cashRows[0] || [])[c] || '').trim().toUpperCase();
+                const pumpNum = pumpStr.replace(/[^0-9]/g, '') || '1';
+                let blockDate = parsedShiftDate;
+                const dMatch = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+                if (dMatch) blockDate = `${dMatch[3]}-${dMatch[2].padStart(2, '0')}-${dMatch[1].padStart(2, '0')}`;
+                attendantBlocks.push({ col: c, name: cellVal, pump: pumpNum, date: blockDate, shiftTime: timeStr.includes('EVENING') ? 'Evening' : 'Morning' });
+              }
+            }
+
+            const DENOMS = [1000, 500, 200, 100, 50, 20, 10, 5];
+
+            for (const block of attendantBlocks) {
+              const denomCounts: Record<number, number> = {};
+              let totalCash = 0;
+              const blockExpenses: { description: string; amount: number }[] = [];
+              let posAmount = 0;
+
+              for (let d = 0; d < DENOMS.length; d++) {
+                const rowIdx = 2 + d;
+                if (rowIdx >= cashRows.length) break;
+                const countCell = cashRows[rowIdx]?.[block.col + 1];
+                denomCounts[DENOMS[d]] = parseInt(String(countCell || '0').replace(/,/g, ''), 10) || 0;
+              }
+
+              for (let r = 2 + DENOMS.length; r < cashRows.length; r++) {
+                const rawC0 = cashRows[r]?.[block.col];
+                const rawC1 = cashRows[r]?.[block.col + 1];
+                const rawC2 = cashRows[r]?.[block.col + 2];
+                const c0 = String(rawC0 || '').trim().toUpperCase();
+                const c1 = String(rawC1 || '').trim();
+                const c1Up = c1.toUpperCase();
+                const c2 = String(rawC2 || '').trim().toUpperCase();
+                // Parse numbers — handle negatives from red-formatted Excel cells
+                const c0Num = parseFloat(String(rawC0 || '0').replace(/[^0-9.-]/g, '')) || 0;
+                const c1Num = parseFloat(String(rawC1 || '0').replace(/[^0-9.-]/g, '')) || 0;
+
+                if (c0 === 'CASH' || c0.includes('CASH')) {
+                  totalCash = c1Num || parseFloat(String(rawC2 || '0').replace(/[^0-9.-]/g, '')) || 0;
+                } else if (c1Up.includes('POS') || c0.includes('POS') || c2.includes('POS')) {
+                  // POS row: amount is in col0, label "POS" in col1 or col2
+                  posAmount = Math.abs(c0Num) || Math.abs(c1Num) || 0;
+                } else if (c0 === 'TOTAL' || c1Up === 'TOTAL' || c2.includes('TOTAL')) {
+                  break;
+                } else if (Math.abs(c0Num) > 0 && c1 && !c1.match(/^[\d,.]+$/) && c1Up !== 'CASH') {
+                  // Expense row: amount in col0 (may be negative/red), description in col1
+                  blockExpenses.push({ description: c1, amount: Math.abs(c0Num) });
+                }
+              }
+
+              // Enrich the matching metre entry with POS
+              const matchEntry = extractedData.find(e => e.attendant_name.toUpperCase() === block.name.toUpperCase());
+              if (matchEntry) matchEntry.pos_remitted = posAmount;
+
+              cashAnalysisEntries.push({
+                branch_id: selectedBranchId,
+                attendant_name: block.name,
+                pump_number: parseInt(block.pump, 10) || 1,
+                product_type: currentProduct,
+                denominations: denomCounts,
+                total_cash: totalCash || Object.entries(denomCounts).reduce((s, [d, c]) => s + Number(d) * c, 0),
+                shift_date: block.date,
+                shift_time: block.shiftTime,
+                expenses: blockExpenses
+              });
+            }
+          }
+        }
+
+        // Attach cash analysis entries for grouped upload
+        (extractedData as any).__cashAnalysis = cashAnalysisEntries;
 
         setParsedData(extractedData);
         setPreview(extractedData.slice(0, 5));
@@ -1065,7 +1218,51 @@ const CsvImporter = () => {
   const executeImport = async () => {
     if (!parsedData || parsedData.length === 0) return;
     setIsProcessing(true);
-    await uploadMutation.mutateAsync(parsedData);
+    try {
+      await uploadMutation.mutateAsync(parsedData);
+
+      // Submit Cash Analysis entries from Sheet 2 if present
+      const cashEntries = (parsedData as any).__cashAnalysis as any[] | undefined;
+      if (cashEntries && cashEntries.length > 0) {
+        let cashCount = 0;
+        let expenseCount = 0;
+        for (const entry of cashEntries) {
+          try {
+            await api.submitCashAnalysis({
+              branch_id: entry.branch_id,
+              attendant_name: entry.attendant_name,
+              pump_number: entry.pump_number,
+              product_type: entry.product_type,
+              denominations: entry.denominations,
+              total_cash: entry.total_cash,
+              shift_date: entry.shift_date,
+              shift_time: entry.shift_time
+            });
+            cashCount++;
+
+            // Insert expenses from this attendant's block
+            if (entry.expenses && entry.expenses.length > 0) {
+              try {
+                const result = await api.insertExpensesFromImport(
+                  entry.branch_id, entry.attendant_name, entry.shift_date, entry.shift_time, entry.expenses
+                );
+                expenseCount += result.count;
+              } catch (e) {
+                console.error('Expense insert failed for', entry.attendant_name, e);
+              }
+            }
+          } catch (e) {
+            console.error('Cash analysis entry failed:', entry.attendant_name, e);
+          }
+        }
+        const parts = [];
+        if (cashCount > 0) parts.push(`${cashCount} cash analysis`);
+        if (expenseCount > 0) parts.push(`${expenseCount} expenses`);
+        if (parts.length > 0) notifyToast(`Sheet 2: imported ${parts.join(' + ')}.`);
+      }
+    } catch (e) {
+      // uploadMutation handles its own error toast
+    }
     setIsProcessing(false);
   };
 
@@ -1150,10 +1347,11 @@ const CsvImporter = () => {
 // --- Main Application ---
 
 const Dashboard = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'settings' | 'expenses' | 'entry' | 'cash-analysis'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'settings' | 'expenses' | 'entry'>('overview');
   const [level, setLevel] = useState<'global' | 'branch'>('global');
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [historyRange, setHistoryRange] = useState(30);
+  const [drillDown, setDrillDown] = useState<any>({ isOpen: false });
 
   // Interaction Fix: Reset visual stack when tab changes. Prevent ghosting.
   useEffect(() => {
@@ -1211,6 +1409,16 @@ const Dashboard = () => {
     <div className="flex h-screen bg-white text-zinc-900 font-sans selection:bg-zinc-200 selection:text-zinc-900">
       <Toaster />
 
+      {/* Centralized Drill Down Modal for Dashboard */}
+      <AttendantModal
+        isOpen={drillDown.isOpen}
+        onClose={() => setDrillDown({ isOpen: false })}
+        branchId={drillDown.branchId}
+        attendantName={drillDown.attendantName}
+        shiftDate={drillDown.shiftDate}
+        shiftTime={drillDown.shiftTime}
+      />
+
       {/* Restrained Sidebar */}
       <aside className="w-56 bg-[#FAFAFA] border-r border-zinc-200 p-6 flex flex-col shrink-0 z-30">
         <div className="mb-10 px-2 opacity-80">
@@ -1220,7 +1428,7 @@ const Dashboard = () => {
         <nav className="space-y-1 flex-1">
           <SidebarItem icon={LayoutDashboard} label="Live Shift" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
           <SidebarItem icon={FileEdit} label="Manual Entry" active={activeTab === 'entry'} onClick={() => setActiveTab('entry')} />
-          <SidebarItem icon={Receipt} label="Cash Analysis" active={activeTab === 'cash-analysis'} onClick={() => setActiveTab('cash-analysis')} />
+
           <SidebarItem icon={History} label="Historical Reports" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           <SidebarItem icon={Receipt} label="Expense Audit" active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} />
           <SidebarItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
@@ -1370,8 +1578,22 @@ const Dashboard = () => {
                         ) : (historyReports || []).length === 0 ? (
                           <tr><td colSpan={4} className="text-center py-8 text-sm text-zinc-500">No Historical Cash Reports Found</td></tr>
                         ) : (historyReports || []).map((row: any, i: number) => (
-                          <tr key={i}>
-                            <td className="py-4 whitespace-nowrap">
+                          <tr
+                            key={i}
+                            onClick={() => {
+                              if (row.branch_id) {
+                                setDrillDown({
+                                  isOpen: true,
+                                  attendantName: row.attendant,
+                                  branchId: row.branch_id,
+                                  shiftDate: row.shift_date,
+                                  shiftTime: row.shift_time
+                                });
+                              }
+                            }}
+                            className="cursor-pointer hover:bg-zinc-50 transition-colors group"
+                          >
+                            <td className="py-4 whitespace-nowrap group-hover:pl-2 transition-all">
                               <div className="text-sm font-bold text-zinc-900">{new Date(row.shift_date || row.created_at).toLocaleDateString()}</div>
                               <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{row.shift_time || 'Morning'}</div>
                             </td>
@@ -1400,16 +1622,7 @@ const Dashboard = () => {
                 </motion.div>
               )}
 
-              {activeTab === 'cash-analysis' && (
-                <motion.div
-                  key="cash-analysis-tab"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                >
-                  <CashAnalysis />
-                </motion.div>
-              )}
+
 
               {activeTab === 'settings' && (
                 <motion.div

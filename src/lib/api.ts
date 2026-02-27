@@ -411,6 +411,50 @@ export async function updateShiftDataRecord(id: string, updates: { expected_amou
     return data;
 }
 
+export async function insertExpensesFromImport(branchId: string, attendantName: string, shiftDate: string, shiftTime: string, expenses: { description: string, amount: number }[]) {
+    if (!expenses || expenses.length === 0) return { count: 0 };
+
+    // Find the shift -> shift_data for this attendant
+    const { data: shift } = await supabase
+        .from('shifts')
+        .select('id')
+        .eq('branch_id', branchId)
+        .eq('shift_date', shiftDate)
+        .eq('shift_time', shiftTime)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+    if (!shift) return { count: 0 };
+
+    const { data: attendant } = await supabase
+        .from('attendants')
+        .select('id')
+        .eq('branch_id', branchId)
+        .ilike('name', attendantName)
+        .single();
+    if (!attendant) return { count: 0 };
+
+    const { data: shiftDataRows } = await supabase
+        .from('shift_data')
+        .select('id')
+        .eq('shift_id', shift.id)
+        .eq('attendant_id', attendant.id)
+        .limit(1);
+    if (!shiftDataRows || shiftDataRows.length === 0) return { count: 0 };
+
+    const shiftDataId = shiftDataRows[0].id;
+    const payloads = expenses.map(e => ({
+        id: crypto.randomUUID(),
+        shift_data_id: shiftDataId,
+        description: e.description,
+        amount: e.amount,
+        status: 'PENDING'
+    }));
+
+    const { error } = await supabase.from('expenses').insert(payloads);
+    if (error) throw error;
+    return { count: payloads.length };
+}
 export async function submitCashAnalysis(payload: {
     branch_id: string;
     attendant_name: string;
@@ -454,6 +498,7 @@ export async function getHistoricalReports(days: number = 30) {
             total_cash,
             shift_date,
             shift_time,
+            branch_id,
             branches ( name )
         `)
         .gte('shift_date', historicalDate.toISOString().split('T')[0])
@@ -470,7 +515,8 @@ export async function getHistoricalReports(days: number = 30) {
         product: `${item.product_type} - Pump ${item.pump_number}`,
         total_cash: item.total_cash,
         shift_date: item.shift_date,
-        shift_time: item.shift_time
+        shift_time: item.shift_time,
+        branch_id: item.branch_id
     }));
 }
 
@@ -509,7 +555,7 @@ export async function deleteOpenShiftByBranch(branchId: string) {
 }
 
 export async function getAttendantDrillDown(branchId: string, attendantName: string, shiftDate: string, shiftTime: string) {
-    // Phase 1: Try to locate latest Cash Analysis for this exact shift profile
+    // Phase 1: Cash Analysis report
     const { data: cashReports } = await supabase
         .from('cash_analysis_reports')
         .select('*')
@@ -517,48 +563,60 @@ export async function getAttendantDrillDown(branchId: string, attendantName: str
         .ilike('attendant_name', attendantName)
         .eq('shift_date', shiftDate)
         .eq('shift_time', shiftTime)
-        .order('created_at', { ascending: false })
         .limit(1);
 
     const cashReport = cashReports && cashReports.length > 0 ? cashReports[0] : null;
 
-    // Phase 2: Pull expenses explicitly tracking this user in the active shift
-    // We locate the exact shift_data rows first
-    const { data: shift } = await supabase
+    // Phase 2: Find shift_data directly via shift + attendant join
+    const { data: shifts, error: shiftsError } = await supabase
         .from('shifts')
         .select('id')
         .eq('branch_id', branchId)
         .eq('shift_date', shiftDate)
         .eq('shift_time', shiftTime)
-        .eq('status', 'OPEN')
-        .single();
+        .limit(1);
+
+    if (shiftsError) {
+        console.error('getAttendantDrillDown shifts lookup error:', shiftsError);
+    }
+
+    const shift = shifts && shifts.length > 0 ? shifts[0] : null;
 
     let expenses: any[] = [];
+    let posTotal = 0;
+    let cashTotal = 0;
+
     if (shift) {
+        // Resolve attendant ID via safe lookup instead of inner join to avoid 400 Bad Request
         const { data: attendants } = await supabase
             .from('attendants')
             .select('id')
             .eq('branch_id', branchId)
-            .ilike('name', attendantName)
-            .single();
+            .ilike('name', attendantName);
 
-        if (attendants) {
+        if (attendants && attendants.length > 0) {
+            const attendantIds = attendants.map(a => a.id);
             const { data: shiftDataRows } = await supabase
                 .from('shift_data')
-                .select('id')
+                .select('id, pos_remitted, cash_remitted, attendant_id')
                 .eq('shift_id', shift.id)
-                .eq('attendant_id', attendants.id);
+                .in('attendant_id', attendantIds);
 
-            const sdIds = shiftDataRows?.map(r => r.id) || [];
-            if (sdIds.length > 0) {
-                const { data: exps } = await supabase
-                    .from('expenses')
-                    .select('*')
-                    .in('shift_data_id', sdIds);
-                expenses = exps || [];
+            if (shiftDataRows && shiftDataRows.length > 0) {
+                posTotal = shiftDataRows.reduce((sum, r) => sum + (r.pos_remitted || 0), 0);
+                cashTotal = shiftDataRows.reduce((sum, r) => sum + (r.cash_remitted || 0), 0);
+
+                const sdIds = shiftDataRows.map(r => r.id);
+                if (sdIds.length > 0) {
+                    const { data: exps } = await supabase
+                        .from('expenses')
+                        .select('*')
+                        .in('shift_data_id', sdIds);
+                    expenses = exps || [];
+                }
             }
         }
     }
 
-    return { cashReport, expenses };
+    return { cashReport, expenses, posTotal, cashTotal };
 }
